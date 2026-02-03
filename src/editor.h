@@ -65,11 +65,11 @@ private:
     bool   m_cursorOverridden = false;
     uint64_t m_hoveredNodeId = 0;
     QSet<uint64_t> m_currentSelIds;
-    int        m_hoverTokLine   = -1;
-    EditTarget m_hoverTokTarget = EditTarget::Name;
     // ── Drag selection ──
     bool m_dragging = false;
+    bool m_dragStarted = false;   // true once drag threshold exceeded
     int  m_dragLastLine = -1;
+    QPoint m_dragStartPos;        // viewport coords at press
     Qt::KeyboardModifiers m_dragInitMods = Qt::NoModifier;
 
     // ── Deferred click (protects multi-select on double-click) ──
@@ -112,9 +112,8 @@ private:
     void updateEditableIndicators(int line);
     void applyHoverCursor();
     void applyHoverHighlight();
-    void updateEditTokenBox();
     void validateEditLive();
-    void showEditValidation(bool valid);
+    void setEditComment(const QString& comment);
 
     // ── Refactored helpers ──
     struct HitInfo { int line = -1; int col = -1; uint64_t nodeId = 0; bool inFoldCol = false; };

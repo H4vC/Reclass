@@ -449,7 +449,8 @@ namespace cmd {
     struct Rename      { uint64_t nodeId; QString oldName, newName; };
     struct Collapse    { uint64_t nodeId; bool oldState, newState; };
     struct Insert      { Node node; };
-    struct Remove      { uint64_t nodeId; QVector<Node> subtree; };
+    struct Remove      { uint64_t nodeId; QVector<Node> subtree;
+                         QVector<OffsetAdj> offAdjs; };
     struct ChangeBase  { uint64_t oldBase, newBase; };
     struct WriteBytes  { uint64_t addr; QByteArray oldBytes, newBytes; };
 }
@@ -470,10 +471,12 @@ struct ColumnSpan {
 enum class EditTarget { Name, Type, Value };
 
 // Column layout constants (shared with format.cpp span computation)
-inline constexpr int kFoldCol  = 3;   // 3-char fold indicator prefix per line
-inline constexpr int kColType  = 10;
-inline constexpr int kColName  = 24;
-inline constexpr int kSepWidth = 2;
+inline constexpr int kFoldCol    = 3;   // 3-char fold indicator prefix per line
+inline constexpr int kColType    = 10;
+inline constexpr int kColName    = 24;
+inline constexpr int kColValue   = 22;
+inline constexpr int kColComment = 28;  // "// Enter=Save Esc=Cancel" fits
+inline constexpr int kSepWidth   = 2;
 
 inline ColumnSpan typeSpanFor(const LineMeta& lm) {
     if (lm.lineKind != LineKind::Field || lm.isContinuation) return {};
@@ -494,25 +497,47 @@ inline ColumnSpan nameSpanFor(const LineMeta& lm) {
     return {start, start + kColName, true};
 }
 
-inline ColumnSpan valueSpanFor(const LineMeta& lm, int lineLength) {
+inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/) {
     if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
     int ind = kFoldCol + lm.depth * 3;
 
-    // Hex/Padding layout: [Type][sep][ASCII(8)][sep][hex bytes...]
+    // Hex/Padding layout: [Type][sep][ASCII(8)][sep][hex bytes(23)]
     bool isHexPad = isHexPreview(lm.nodeKind);
+    int valWidth = isHexPad ? 23 : kColValue;  // hex bytes or value column
 
     if (lm.isContinuation) {
         int prefixW = isHexPad
             ? (kColType + kSepWidth + 8 + kSepWidth)
             : (kColType + kColName + 4);
         int start = ind + prefixW;
-        return {start, lineLength, start < lineLength};
+        return {start, start + valWidth, true};
     }
     if (lm.lineKind != LineKind::Field) return {};
 
     int start = isHexPad
         ? (ind + kColType + kSepWidth + 8 + kSepWidth)
         : (ind + kColType + kSepWidth + kColName + kSepWidth);
+    return {start, start + valWidth, true};
+}
+
+inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength) {
+    if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
+    int ind = kFoldCol + lm.depth * 3;
+
+    bool isHexPad = isHexPreview(lm.nodeKind);
+    int valWidth = isHexPad ? 23 : kColValue;
+
+    int start;
+    if (lm.isContinuation) {
+        int prefixW = isHexPad
+            ? (kColType + kSepWidth + 8 + kSepWidth)
+            : (kColType + kColName + 4);
+        start = ind + prefixW + valWidth;
+    } else {
+        start = isHexPad
+            ? (ind + kColType + kSepWidth + 8 + kSepWidth + valWidth)
+            : (ind + kColType + kSepWidth + kColName + kSepWidth + valWidth);
+    }
     return {start, lineLength, start < lineLength};
 }
 
@@ -544,7 +569,8 @@ namespace fmt {
     QString fmtPointer32(uint32_t v);
     QString fmtPointer64(uint64_t v);
     QString fmtNodeLine(const Node& node, const Provider& prov,
-                        uint64_t addr, int depth, int subLine = 0);
+                        uint64_t addr, int depth, int subLine = 0,
+                        const QString& comment = {});
     QString fmtOffsetMargin(int64_t relativeOffset, bool isContinuation);
     QString fmtStructHeader(const Node& node, int depth);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
@@ -555,6 +581,7 @@ namespace fmt {
                           uint64_t addr, int subLine);
     QByteArray parseValue(NodeKind kind, const QString& text, bool* ok);
     QByteArray parseAsciiValue(const QString& text, int expectedSize, bool* ok);
+    QString validateValue(NodeKind kind, const QString& text);
 } // namespace fmt
 
 // ── Compose function forward declaration ──

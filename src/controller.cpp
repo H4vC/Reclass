@@ -155,7 +155,6 @@ void RcxController::connectEditor(RcxEditor* editor) {
 
 void RcxController::refresh() {
     m_lastResult = m_doc->compose();
-    qDebug() << "refresh() called, text length:" << m_lastResult.text.size();
 
     // Prune stale selections (nodes removed by undo/redo/delete)
     QSet<uint64_t> valid;
@@ -265,15 +264,36 @@ void RcxController::insertNode(uint64_t parentId, int offset, NodeKind kind, con
 
 void RcxController::removeNode(int nodeIdx) {
     if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
-    uint64_t nodeId = m_doc->tree.nodes[nodeIdx].id;
+    const Node& node = m_doc->tree.nodes[nodeIdx];
+    uint64_t nodeId = node.id;
+    uint64_t parentId = node.parentId;
 
+    // Compute size of deleted node/subtree
+    int deletedSize = (node.kind == NodeKind::Struct || node.kind == NodeKind::Array)
+        ? m_doc->tree.structSpan(node.id) : node.byteSize();
+    int deletedEnd = node.offset + deletedSize;
+
+    // Find siblings after this node and compute offset adjustments
+    QVector<cmd::OffsetAdj> adjs;
+    if (parentId != 0) {  // only adjust if not root-level
+        auto siblings = m_doc->tree.childrenOf(parentId);
+        for (int si : siblings) {
+            if (si == nodeIdx) continue;
+            auto& sib = m_doc->tree.nodes[si];
+            if (sib.offset >= deletedEnd) {
+                adjs.append({sib.id, sib.offset, sib.offset - deletedSize});
+            }
+        }
+    }
+
+    // Collect subtree
     QVector<int> indices = m_doc->tree.subtreeIndices(nodeId);
     QVector<Node> subtree;
     for (int i : indices)
         subtree.append(m_doc->tree.nodes[i]);
 
     m_doc->undoStack.push(new RcxCommand(this,
-        cmd::Remove{nodeId, subtree}));
+        cmd::Remove{nodeId, subtree, adjs}));
 }
 
 void RcxController::toggleCollapse(int nodeIdx) {
@@ -316,13 +336,23 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 tree.addNode(c.node);
             }
         } else if constexpr (std::is_same_v<T, cmd::Remove>) {
-            qDebug() << "applyCommand Remove, isUndo:" << isUndo << "nodeId:" << c.nodeId;
             if (isUndo) {
+                // Restore nodes first
                 for (const Node& n : c.subtree)
                     tree.addNode(n);
+                // Revert offset adjustments
+                for (const auto& adj : c.offAdjs) {
+                    int ai = tree.indexOfId(adj.nodeId);
+                    if (ai >= 0) tree.nodes[ai].offset = adj.oldOffset;
+                }
             } else {
+                // Apply offset adjustments first (before removing changes indices)
+                for (const auto& adj : c.offAdjs) {
+                    int ai = tree.indexOfId(adj.nodeId);
+                    if (ai >= 0) tree.nodes[ai].offset = adj.newOffset;
+                }
+                // Remove nodes
                 QVector<int> indices = tree.subtreeIndices(c.nodeId);
-                qDebug() << "  Removing" << indices.size() << "nodes";
                 std::sort(indices.begin(), indices.end(), std::greater<int>());
                 for (int idx : indices)
                     tree.nodes.remove(idx);
@@ -518,6 +548,11 @@ void RcxController::batchRemoveNodes(const QVector<int>& nodeIndices) {
     }
     idSet = m_doc->tree.normalizePreferAncestors(idSet);
     if (idSet.isEmpty()) return;
+
+    // Clear selection before delete (prevents stale highlight on shifted lines)
+    m_selIds.clear();
+    m_anchorLine = -1;
+
     m_doc->undoStack.beginMacro(QString("Delete %1 nodes").arg(idSet.size()));
     for (uint64_t id : idSet) {
         int idx = m_doc->tree.indexOfId(id);

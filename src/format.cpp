@@ -6,9 +6,10 @@ namespace rcx::fmt {
 
 // ── Column layout ──
 // COL_TYPE and COL_NAME use shared constants from core.h (kColType, kColName)
-static constexpr int COL_TYPE  = kColType;
-static constexpr int COL_NAME  = kColName;
-static constexpr int COL_VALUE = 22;
+static constexpr int COL_TYPE    = kColType;
+static constexpr int COL_NAME    = kColName;
+static constexpr int COL_VALUE   = 22;
+static constexpr int COL_COMMENT = 28;  // "// Enter=Save Esc=Cancel" fits
 static const QString SEP = QStringLiteral("  ");
 
 static QString fit(QString s, int w) {
@@ -203,26 +204,31 @@ QString readValue(const Node& node, const Provider& prov,
 // ── Full node line ──
 
 QString fmtNodeLine(const Node& node, const Provider& prov,
-                    uint64_t addr, int depth, int subLine) {
+                    uint64_t addr, int depth, int subLine,
+                    const QString& comment) {
     QString ind = indent(depth);
     QString type = typeName(node.kind);
     QString name = fit(node.name, COL_NAME);
     // Blank prefix for continuation lines (same width as type+sep+name+sep)
     const int prefixW = COL_TYPE + COL_NAME + 4; // 2 seps × 2 chars
 
+    // Comment suffix (padded or empty)
+    QString cmtSuffix = comment.isEmpty() ? QString(COL_COMMENT, ' ')
+                                          : fit(comment, COL_COMMENT);
+
     // Mat4x4: subLine 0..3 = rows
     if (node.kind == NodeKind::Mat4x4) {
-        QString val = readValue(node, prov, addr, subLine);
-        if (subLine == 0) return ind + type + SEP + name + SEP + val;
-        return ind + QString(prefixW, ' ') + val;
+        QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);
+        if (subLine == 0) return ind + type + SEP + name + SEP + val + cmtSuffix;
+        return ind + QString(prefixW, ' ') + val + cmtSuffix;
     }
 
     // For vector types, subLine selects component
     if (subLine > 0 && (node.kind == NodeKind::Vec2 ||
                         node.kind == NodeKind::Vec3 ||
                         node.kind == NodeKind::Vec4)) {
-        QString val = readValue(node, prov, addr, subLine);
-        return ind + QString(prefixW, ' ') + val;
+        QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);
+        return ind + QString(prefixW, ' ') + val + cmtSuffix;
     }
 
     // Hex nodes and Padding: ASCII preview + hex bytes (compact)
@@ -234,22 +240,22 @@ QString fmtNodeLine(const Node& node, const Provider& prov,
             QByteArray b = prov.isReadable(addr + lineOff, lineBytes)
                 ? prov.readBytes(addr + lineOff, lineBytes) : QByteArray(lineBytes, '\0');
             QString ascii = bytesToAscii(b, lineBytes);
-            QString hex = bytesToHex(b, lineBytes);
+            QString hex = bytesToHex(b, lineBytes).leftJustified(23, ' '); // 8*3-1
             if (subLine == 0)
-                return ind + type + SEP + ascii + SEP + hex;
-            return ind + QString(COL_TYPE + (int)SEP.size(), ' ') + ascii + SEP + hex;
+                return ind + type + SEP + ascii + SEP + hex + cmtSuffix;
+            return ind + QString(COL_TYPE + (int)SEP.size(), ' ') + ascii + SEP + hex + cmtSuffix;
         }
         // Hex8..Hex64: single line, ASCII padded to 8 chars so hex column aligns
         const int sz = sizeForKind(node.kind);
         QByteArray b = prov.isReadable(addr, sz)
             ? prov.readBytes(addr, sz) : QByteArray(sz, '\0');
         QString ascii = bytesToAscii(b, sz).leftJustified(8, ' ');
-        QString hex = bytesToHex(b, sz);
-        return ind + type + SEP + ascii + SEP + hex;
+        QString hex = bytesToHex(b, sz).leftJustified(23, ' ');
+        return ind + type + SEP + ascii + SEP + hex + cmtSuffix;
     }
 
-    QString val = readValue(node, prov, addr, subLine);
-    return ind + type + SEP + name + SEP + val;
+    QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);
+    return ind + type + SEP + name + SEP + val + cmtSuffix;
 }
 
 // ── Editable value (parse-friendly form for edit dialog) ──
@@ -387,6 +393,25 @@ QByteArray parseValue(NodeKind kind, const QString& text, bool* ok) {
     default:
         return {};
     }
+}
+
+// ── Value validation (returns error message or empty string if valid) ──
+
+QString validateValue(NodeKind kind, const QString& text) {
+    QString s = text.trimmed();
+    if (s.isEmpty()) return {};
+
+    bool ok;
+    parseValue(kind, text, &ok);
+    if (ok) return {};
+
+    // Return byte-capacity max based on type size
+    const auto* m = kindMeta(kind);
+    if (m && m->size > 0 && m->size <= 8) {
+        uint64_t maxVal = (m->size == 8) ? ~0ULL : ((1ULL << (m->size * 8)) - 1);
+        return QStringLiteral("0x%1 max").arg(maxVal, m->size * 2, 16, QChar('0'));
+    }
+    return QStringLiteral("invalid");
 }
 
 } // namespace rcx::fmt

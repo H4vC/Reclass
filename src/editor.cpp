@@ -22,7 +22,6 @@ static const QColor kFgMarginDim("#505050");
 
 static constexpr int IND_EDITABLE  = 8;
 static constexpr int IND_HEX_DIM  = 9;
-static constexpr int IND_HOVER_TOK = 10;
 
 static QString g_fontName = "Consolas";
 
@@ -85,7 +84,6 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
         if (!m_editState.active) return;
         if (m_editState.target == EditTarget::Value)
             validateEditLive();
-        updateEditTokenBox();
     });
 }
 
@@ -129,15 +127,6 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
                          IND_HEX_DIM, QColor("#505050"));
 
-    // Hovered editable token highlight (subtle background tint, no outline)
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
-                         IND_HOVER_TOK, 8 /*INDIC_STRAIGHTBOX*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_HOVER_TOK, QColor("#569cd6"));
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETALPHA,
-                         IND_HOVER_TOK, (long)35);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETOUTLINEALPHA,
-                         IND_HOVER_TOK, (long)0);
 }
 
 void RcxEditor::setupLexer() {
@@ -226,14 +215,14 @@ void RcxEditor::setupMarkers() {
     m_sci->setMarkerBackgroundColor(QColor("#e5a00d"), M_CYCLE);
     m_sci->setMarkerForegroundColor(QColor("#e5a00d"), M_CYCLE);
 
-    // M_ERR (4): background (dark red)
+    // M_ERR (4): background (dark red - brightened for visibility)
     m_sci->markerDefine(QsciScintilla::Background, M_ERR);
-    m_sci->setMarkerBackgroundColor(QColor("#5c2020"), M_ERR);
+    m_sci->setMarkerBackgroundColor(QColor("#7a2e2e"), M_ERR);
     m_sci->setMarkerForegroundColor(QColor("#ffffff"), M_ERR);
 
-    // M_STRUCT_BG (5): background tint for struct header/footer
+    // M_STRUCT_BG (5): struct header/footer (matches regular bg, may remove later)
     m_sci->markerDefine(QsciScintilla::Background, M_STRUCT_BG);
-    m_sci->setMarkerBackgroundColor(QColor("#1a2638"), M_STRUCT_BG);
+    m_sci->setMarkerBackgroundColor(QColor("#1e1e1e"), M_STRUCT_BG);
     m_sci->setMarkerForegroundColor(QColor("#d4d4d4"), M_STRUCT_BG);
 
     // M_HOVER (6): full-row hover highlight
@@ -257,6 +246,7 @@ void RcxEditor::allocateMarginStyles() {
     QByteArray fontName = editorFont().family().toUtf8();
     int fontSize = editorFont().pointSize();
 
+    // Margin styles (dim gray text)
     for (int s = MSTYLE_NORMAL; s <= MSTYLE_CONT; s++) {
         unsigned long abs = (unsigned long)(base + s);
         m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETFORE, abs, (long)0x505050);
@@ -286,11 +276,8 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     applyFoldLevels(result.meta);
     applyHexDimming(result.meta);
 
-    // Re-apply editable indicators for current cursor line
+    // Reset hint line - applySelectionOverlay will repaint indicators
     m_hintLine = -1;
-    int line, col;
-    m_sci->getCursorPosition(&line, &col);
-    updateEditableIndicators(line);
 }
 
 void RcxEditor::applyMarginText(const QVector<LineMeta>& meta) {
@@ -376,7 +363,7 @@ void RcxEditor::applySelectionOverlay(const QSet<uint64_t>& selIds) {
     m_currentSelIds = selIds;
     m_sci->markerDeleteAll(M_SELECTED);
 
-    // Clear all editable indicators, then repaint for selected + cursor line
+    // Clear all editable indicators, then repaint for selected lines only
     long docLen = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLENGTH);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_EDITABLE);
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, (unsigned long)0, docLen);
@@ -388,13 +375,9 @@ void RcxEditor::applySelectionOverlay(const QSet<uint64_t>& selIds) {
         }
     }
 
-    // Also paint cursor line (even if not selected)
-    if (!m_editState.active) {
-        int curLine, col;
-        m_sci->getCursorPosition(&curLine, &col);
-        paintEditableSpans(curLine);
-        m_hintLine = curLine;
-    }
+    // Reset hint line - updateEditableIndicators will handle cursor hints
+    // on actual user navigation (not stale restored positions)
+    m_hintLine = -1;
 
     applyHoverHighlight();
 }
@@ -486,19 +469,22 @@ static QString getLineText(QsciScintilla* sci, int line) {
 // ── Shared inline-edit shutdown ──
 
 RcxEditor::EndEditInfo RcxEditor::endInlineEdit() {
-    // Clear edit token box and reset indicator color
-    clearIndicatorLine(IND_HOVER_TOK, m_editState.line);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_HOVER_TOK, QColor("#569cd6"));
+    // Clear edit comment and error marker before deactivating
+    if (m_editState.target == EditTarget::Value) {
+        setEditComment({});  // Clear to spaces
+        m_sci->markerDelete(m_editState.line, M_ERR);
+    }
     EndEditInfo info{m_editState.nodeIdx, m_editState.subLine, m_editState.target};
     m_editState.active = false;
     m_sci->setReadOnly(true);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 0);
+    // Switch from I-beam to Arrow (keep override active to block Scintilla's cursor)
     if (m_cursorOverridden) {
-        QApplication::restoreOverrideCursor();
-        m_cursorOverridden = false;
+        QApplication::changeOverrideCursor(Qt::ArrowCursor);
+    } else {
+        QApplication::setOverrideCursor(Qt::ArrowCursor);
+        m_cursorOverridden = true;
     }
-    m_sci->viewport()->setCursor(Qt::ArrowCursor);
     // Disable selection rendering again
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)0, (long)0);
@@ -586,16 +572,28 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
 
 RcxEditor::HitInfo RcxEditor::hitTest(const QPoint& vp) const {
     HitInfo h;
+
+    // Try precise position first (works when cursor is over actual text)
     long pos = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMPOINTCLOSE,
                                      (unsigned long)vp.x(), (long)vp.y());
-    if (pos < 0) return h;
-    h.line = (int)m_sci->SendScintilla(
-        QsciScintillaBase::SCI_LINEFROMPOSITION, (unsigned long)pos);
-    h.col = (int)m_sci->SendScintilla(
-        QsciScintillaBase::SCI_GETCOLUMN, (unsigned long)pos);
+    if (pos >= 0) {
+        h.line = (int)m_sci->SendScintilla(
+            QsciScintillaBase::SCI_LINEFROMPOSITION, (unsigned long)pos);
+        h.col = (int)m_sci->SendScintilla(
+            QsciScintillaBase::SCI_GETCOLUMN, (unsigned long)pos);
+    } else {
+        // Fallback: calculate line from Y coordinate (for empty space past text)
+        int firstVisible = (int)m_sci->SendScintilla(
+            QsciScintillaBase::SCI_GETFIRSTVISIBLELINE);
+        int lineHeight = (int)m_sci->SendScintilla(
+            QsciScintillaBase::SCI_TEXTHEIGHT, 0);
+        if (lineHeight > 0)
+            h.line = firstVisible + vp.y() / lineHeight;
+    }
+
     if (h.line >= 0 && h.line < m_meta.size()) {
         h.nodeId = m_meta[h.line].nodeId;
-        h.inFoldCol = (h.col < kFoldCol && m_meta[h.line].foldHead);
+        h.inFoldCol = (h.col >= 0 && h.col < kFoldCol && m_meta[h.line].foldHead);
     }
     return h;
 }
@@ -668,7 +666,16 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         && event->type() == QEvent::MouseButtonPress) {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
+            // Sync hover to click position (prevents hover/selection desync)
+            m_lastHoverPos = me->pos();
+            m_hoverInside = true;
             auto h = hitTest(me->pos());
+            uint64_t newHoverId = (h.line >= 0) ? h.nodeId : 0;
+            if (newHoverId != m_hoveredNodeId) {
+                m_hoveredNodeId = newHoverId;
+                applyHoverHighlight();
+            }
+
             if (h.inFoldCol) {
                 emit marginClicked(0, h.line, me->modifiers());
                 return true;
@@ -687,6 +694,8 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                 }
 
                 m_dragging = true;
+                m_dragStarted = false;  // require threshold before extending
+                m_dragStartPos = me->pos();
                 m_dragLastLine = h.line;
                 m_dragInitMods = me->modifiers();
 
@@ -705,10 +714,19 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         }
     }
     // Drag-select: extend selection as mouse moves with button held
+    // Requires minimum drag distance to prevent accidental micro-drag selection
     if (obj == m_sci->viewport() && !m_editState.active
         && event->type() == QEvent::MouseMove && m_dragging) {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->buttons() & Qt::LeftButton) {
+            // Check drag threshold (8 pixels) before starting drag-selection
+            if (!m_dragStarted) {
+                int dy = me->pos().y() - m_dragStartPos.y();
+                if (qAbs(dy) < 8)
+                    return false;  // not yet a drag, let Scintilla handle
+                m_dragStarted = true;
+            }
+
             // Flush deferred click before extending drag
             if (m_pendingClickNodeId != 0) {
                 emit nodeClicked(m_pendingClickLine, m_pendingClickNodeId,
@@ -722,15 +740,22 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
             }
         } else {
             m_dragging = false;
+            m_dragStarted = false;
         }
     }
     if (obj == m_sci->viewport() && event->type() == QEvent::MouseButtonRelease) {
         m_dragging = false;
+        m_dragStarted = false;
         if (m_pendingClickNodeId != 0) {
             emit nodeClicked(m_pendingClickLine, m_pendingClickNodeId,
                              m_pendingClickMods);
             m_pendingClickNodeId = 0;
         }
+    }
+    // Block double/triple-click during edit mode (prevents word/line selection)
+    if (obj == m_sci->viewport() && m_editState.active
+        && event->type() == QEvent::MouseButtonDblClick) {
+        return true;
     }
     if (obj == m_sci->viewport() && !m_editState.active
         && event->type() == QEvent::MouseButtonDblClick) {
@@ -875,15 +900,8 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
 
 bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     if (m_editState.active) return false;
-    if (m_cursorOverridden) {
-        QApplication::restoreOverrideCursor();
-        m_cursorOverridden = false;
-    }
     m_hoveredNodeId = 0;
     applyHoverHighlight();
-    // Clear hover token box (will be repainted as edit token box below)
-    clearIndicatorLine(IND_HOVER_TOK, m_hoverTokLine);
-    m_hoverTokLine = -1;
     // Clear editable-token color hints (de-emphasize non-active tokens)
     clearIndicatorLine(IND_EDITABLE, m_hintLine);
     m_hintLine = -1;
@@ -919,8 +937,13 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 1);
     m_sci->setReadOnly(false);
-    QApplication::setOverrideCursor(Qt::IBeamCursor);
-    m_cursorOverridden = true;
+    // Switch to I-beam for editing
+    if (m_cursorOverridden) {
+        QApplication::changeOverrideCursor(Qt::IBeamCursor);
+    } else {
+        QApplication::setOverrideCursor(Qt::IBeamCursor);
+        m_cursorOverridden = true;
+    }
 
     // Re-enable selection rendering for inline edit
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
@@ -932,21 +955,15 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     long posStart = lineStart + m_editState.spanStart;
     long posEnd   = posStart + trimmed.toUtf8().size();
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL, posEnd, posEnd);
-    updateEditTokenBox();
+
+    // Show initial edit hint in comment column
+    if (target == EditTarget::Value)
+        setEditComment(QStringLiteral("// Enter=Save Esc=Cancel"));
 
     if (target == EditTarget::Type)
         QTimer::singleShot(0, this, &RcxEditor::showTypeAutocomplete);
 
     return true;
-}
-
-void RcxEditor::updateEditTokenBox() {
-    clearIndicatorLine(IND_HOVER_TOK, m_editState.line);
-
-    int endCol = editEndCol();
-    if (endCol <= m_editState.spanStart) return;
-
-    fillIndicatorCols(IND_HOVER_TOK, m_editState.line, m_editState.spanStart, endCol);
 }
 
 int RcxEditor::editEndCol() const {
@@ -1023,6 +1040,19 @@ void RcxEditor::updateEditableIndicators(int line) {
     if (m_editState.active) return;
     if (line == m_hintLine) return;
 
+    // If new line is selected, its indicators are managed by applySelectionOverlay
+    // But we still need to clear the old non-selected hint line
+    const LineMeta* newLm = metaForLine(line);
+    if (newLm && m_currentSelIds.contains(newLm->nodeId)) {
+        if (m_hintLine >= 0) {
+            const LineMeta* oldLm = metaForLine(m_hintLine);
+            if (!oldLm || !m_currentSelIds.contains(oldLm->nodeId))
+                clearIndicatorLine(IND_EDITABLE, m_hintLine);
+        }
+        m_hintLine = line;
+        return;
+    }
+
     // Clear old cursor line (only if not a selected node)
     if (m_hintLine >= 0) {
         const LineMeta* oldLm = metaForLine(m_hintLine);
@@ -1034,20 +1064,20 @@ void RcxEditor::updateEditableIndicators(int line) {
     paintEditableSpans(line);
 }
 
-// ── Hover cursor (coalesced) ──
+// ── Hover cursor ──
 
 void RcxEditor::applyHoverCursor() {
-    auto clearHoverTok = [&]() {
-        clearIndicatorLine(IND_HOVER_TOK, m_hoverTokLine);
-        m_hoverTokLine = -1;
-    };
+    // Edit mode handles its own cursor (I-beam)
+    if (m_editState.active)
+        return;
 
-    if (m_editState.active || !m_hoverInside
-        || !m_sci->viewport()->underMouse()) {
-        clearHoverTok();
-        if (m_cursorOverridden) {
-            QApplication::restoreOverrideCursor();
-            m_cursorOverridden = false;
+    // Mouse left viewport - set Arrow
+    if (!m_hoverInside || !m_sci->viewport()->underMouse()) {
+        if (!m_cursorOverridden) {
+            QApplication::setOverrideCursor(Qt::ArrowCursor);
+            m_cursorOverridden = true;
+        } else {
+            QApplication::changeOverrideCursor(Qt::ArrowCursor);
         }
         return;
     }
@@ -1062,29 +1092,39 @@ void RcxEditor::applyHoverCursor() {
         if (h.inFoldCol) interactive = true;
     }
 
-    // Token box highlight
-    if (!tokenHit) {
-        clearHoverTok();
-    } else if (line != m_hoverTokLine || t != m_hoverTokTarget) {
-        clearHoverTok();
-        m_hoverTokLine = line;
-        m_hoverTokTarget = t;
-
-        NormalizedSpan norm;
-        if (resolvedSpanFor(line, t, norm))
-            fillIndicatorCols(IND_HOVER_TOK, line, norm.start, norm.end);
-    }
-
-    if (interactive && !m_cursorOverridden) {
-        QApplication::setOverrideCursor(Qt::PointingHandCursor);
+    // Set cursor: pointing hand for interactive, arrow otherwise
+    Qt::CursorShape desired = interactive ? Qt::PointingHandCursor : Qt::ArrowCursor;
+    if (!m_cursorOverridden) {
+        QApplication::setOverrideCursor(desired);
         m_cursorOverridden = true;
-    } else if (!interactive && m_cursorOverridden) {
-        QApplication::restoreOverrideCursor();
-        m_cursorOverridden = false;
+    } else {
+        QApplication::changeOverrideCursor(desired);
     }
 }
 
 // ── Live value validation ──
+
+void RcxEditor::setEditComment(const QString& comment) {
+    const LineMeta* lm = metaForLine(m_editState.line);
+    if (!lm) return;
+
+    QString lineText = getLineText(m_sci, m_editState.line);
+    ColumnSpan cs = commentSpanFor(*lm, lineText.size());
+    if (!cs.valid) return;
+
+    // Pad/truncate comment to fixed width
+    QString padded = comment.leftJustified(kColComment, ' ').left(kColComment);
+
+    long posA = posFromCol(m_sci, m_editState.line, cs.start);
+    long posB = posFromCol(m_sci, m_editState.line, cs.start + kColComment);
+    if (posB <= posA) return;
+
+    QByteArray utf8 = padded.toUtf8();
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, posA);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, posB);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET,
+                         (uintptr_t)utf8.size(), utf8.constData());
+}
 
 void RcxEditor::validateEditLive() {
     QString lineText = getLineText(m_sci, m_editState.line);
@@ -1092,14 +1132,16 @@ void RcxEditor::validateEditLive() {
     int editedLen = m_editState.original.size() + delta;
     QString text = (editedLen > 0)
         ? lineText.mid(m_editState.spanStart, editedLen).trimmed() : QString();
-    bool ok;
-    fmt::parseValue(m_editState.editKind, text, &ok);
-    showEditValidation(ok);
-}
+    QString errorMsg = fmt::validateValue(m_editState.editKind, text);
 
-void RcxEditor::showEditValidation(bool valid) {
-    QColor c = valid ? QColor("#569cd6") : QColor("#e05050");
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE, IND_HOVER_TOK, c);
+    // Show/hide error marker (red background) and update comment
+    if (errorMsg.isEmpty()) {
+        m_sci->markerDelete(m_editState.line, M_ERR);
+        setEditComment(QStringLiteral("// Enter=Save Esc=Cancel"));
+    } else {
+        m_sci->markerAdd(m_editState.line, M_ERR);
+        setEditComment(QStringLiteral("// ") + errorMsg);
+    }
 }
 
 void RcxEditor::setEditorFont(const QString& fontName) {
