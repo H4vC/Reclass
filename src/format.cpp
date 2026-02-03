@@ -47,10 +47,10 @@ QString fmtInt8(int8_t v)     { return QString::number(v); }
 QString fmtInt16(int16_t v)   { return QString::number(v); }
 QString fmtInt32(int32_t v)   { return QString::number(v); }
 QString fmtInt64(int64_t v)   { return QString::number(v); }
-QString fmtUInt8(uint8_t v)   { return QString::number(v); }
-QString fmtUInt16(uint16_t v) { return QString::number(v); }
-QString fmtUInt32(uint32_t v) { return QString::number(v); }
-QString fmtUInt64(uint64_t v) { return QString::number(v); }
+QString fmtUInt8(uint8_t v)   { return hexStr(v, 2); }
+QString fmtUInt16(uint16_t v) { return hexStr(v, 4); }
+QString fmtUInt32(uint32_t v) { return hexStr(v, 8); }
+QString fmtUInt64(uint64_t v) { return hexStr(v, 16); }
 
 QString fmtFloat(float v)     { return QString::number(v, 'f', 3); }
 QString fmtDouble(double v)   { return QString::number(v, 'f', 6); }
@@ -87,9 +87,10 @@ QString fmtStructHeader(const Node& node, int depth) {
 }
 
 QString fmtStructFooter(const Node& node, int depth, int totalSize) {
-    QString s = indent(depth) + QStringLiteral("}; // ") + node.name;
+    QString s = indent(depth) + QStringLiteral("};");
     if (totalSize > 0)
-        s += QStringLiteral("  sizeof=0x") + QString::number(totalSize, 16).toUpper();
+        s += QStringLiteral(" // sizeof(") + node.name + QStringLiteral(")=0x")
+           + QString::number(totalSize, 16).toUpper();
     return s;
 }
 
@@ -225,10 +226,7 @@ QString fmtNodeLine(const Node& node, const Provider& prov,
     }
 
     // Hex nodes and Padding: ASCII preview + hex bytes (compact)
-    if (node.kind == NodeKind::Hex8  || node.kind == NodeKind::Hex16 ||
-        node.kind == NodeKind::Hex32 || node.kind == NodeKind::Hex64 ||
-        node.kind == NodeKind::Padding)
-    {
+    if (isHexPreview(node.kind)) {
         if (node.kind == NodeKind::Padding) {
             const int totalSz = qMax(1, node.arrayLen);
             const int lineOff = subLine * 8;
@@ -276,6 +274,36 @@ static QString stripHex(const QString& s) {
     return s;
 }
 
+// Parse ASCII text into raw byte array (each char becomes a byte)
+QByteArray parseAsciiValue(const QString& text, int expectedSize, bool* ok) {
+    *ok = false;
+    if (text.size() != expectedSize) return {};
+    QByteArray result(expectedSize, Qt::Uninitialized);
+    for (int i = 0; i < expectedSize; i++) {
+        uint c = text[i].unicode();
+        if (c > 255) return {};  // Non-Latin1 character
+        result[i] = (char)c;
+    }
+    *ok = true;
+    return result;
+}
+
+// Parse space-separated hex byte string into raw byte array (no endian conversion)
+static QByteArray parseHexBytes(const QString& s, int expectedSize, bool* ok) {
+    QString clean = s;
+    clean.remove(' ');
+    if (clean.size() != expectedSize * 2) { *ok = false; return {}; }
+    QByteArray result(expectedSize, Qt::Uninitialized);
+    for (int i = 0; i < expectedSize; i++) {
+        bool byteOk;
+        uint byte = clean.mid(i * 2, 2).toUInt(&byteOk, 16);
+        if (!byteOk) { *ok = false; return {}; }
+        result[i] = (char)byte;
+    }
+    *ok = true;
+    return result;
+}
+
 // Range-checked narrowing: sets *ok = false if parsed value doesn't fit in T
 template<class T, class ParseT>
 static QByteArray parseIntChecked(ParseT val, bool* ok) {
@@ -304,18 +332,18 @@ QByteArray parseValue(NodeKind kind, const QString& text, bool* ok) {
     }
 
     switch (kind) {
-    case NodeKind::Hex8:    { uint val = stripHex(s).remove(' ').toUInt(ok, 16);     return parseIntChecked<uint8_t>(val, ok); }
-    case NodeKind::Hex16:   { uint val = stripHex(s).remove(' ').toUInt(ok, 16);     return parseIntChecked<uint16_t>(val, ok); }
-    case NodeKind::Hex32:   { uint val = stripHex(s).remove(' ').toUInt(ok, 16);     return *ok ? toBytes<uint32_t>(val) : QByteArray{}; }
-    case NodeKind::Hex64:   { qulonglong val = stripHex(s).remove(' ').toULongLong(ok, 16); return *ok ? toBytes<uint64_t>(val) : QByteArray{}; }
-    case NodeKind::Int8:    { int val = s.toInt(ok);                      return parseIntChecked<int8_t>(val, ok); }
-    case NodeKind::Int16:   { int val = s.toInt(ok);                      return parseIntChecked<int16_t>(val, ok); }
-    case NodeKind::Int32:   { int val = s.toInt(ok);                      return *ok ? toBytes<int32_t>(val) : QByteArray{}; }
-    case NodeKind::Int64:   { qlonglong val = s.toLongLong(ok);           return *ok ? toBytes<int64_t>(val) : QByteArray{}; }
-    case NodeKind::UInt8:   { uint val = s.toUInt(ok);                    return parseIntChecked<uint8_t>(val, ok); }
-    case NodeKind::UInt16:  { uint val = s.toUInt(ok);                    return parseIntChecked<uint16_t>(val, ok); }
-    case NodeKind::UInt32:  { uint val = s.toUInt(ok);                    return *ok ? toBytes<uint32_t>(val) : QByteArray{}; }
-    case NodeKind::UInt64:  { qulonglong val = s.toULongLong(ok);         return *ok ? toBytes<uint64_t>(val) : QByteArray{}; }
+    case NodeKind::Hex8:    return parseHexBytes(stripHex(s), 1, ok);
+    case NodeKind::Hex16:   return parseHexBytes(stripHex(s), 2, ok);
+    case NodeKind::Hex32:   return parseHexBytes(stripHex(s), 4, ok);
+    case NodeKind::Hex64:   return parseHexBytes(stripHex(s), 8, ok);
+    case NodeKind::Int8:    { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; int val = stripHex(s).toInt(ok,b);                return parseIntChecked<int8_t>(val, ok); }
+    case NodeKind::Int16:   { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; int val = stripHex(s).toInt(ok,b);                return parseIntChecked<int16_t>(val, ok); }
+    case NodeKind::Int32:   { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; int val = stripHex(s).toInt(ok,b);                return *ok ? toBytes<int32_t>(val) : QByteArray{}; }
+    case NodeKind::Int64:   { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; qlonglong val = stripHex(s).toLongLong(ok,b);     return *ok ? toBytes<int64_t>(val) : QByteArray{}; }
+    case NodeKind::UInt8:   { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; uint val = stripHex(s).toUInt(ok,b);              return parseIntChecked<uint8_t>(val, ok); }
+    case NodeKind::UInt16:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; uint val = stripHex(s).toUInt(ok,b);              return parseIntChecked<uint16_t>(val, ok); }
+    case NodeKind::UInt32:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; uint val = stripHex(s).toUInt(ok,b);              return *ok ? toBytes<uint32_t>(val) : QByteArray{}; }
+    case NodeKind::UInt64:  { int b = s.startsWith("0x",Qt::CaseInsensitive)?16:10; qulonglong val = stripHex(s).toULongLong(ok,b);   return *ok ? toBytes<uint64_t>(val) : QByteArray{}; }
     case NodeKind::Float: {
         float val = s.toFloat(ok);
         return *ok ? toBytes<float>(val) : QByteArray{};

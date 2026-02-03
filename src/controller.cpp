@@ -125,9 +125,17 @@ void RcxController::connectEditor(RcxEditor* editor) {
             this, [this](int nodeIdx, int subLine, EditTarget target, const QString& text) {
         if (nodeIdx < 0) { refresh(); return; }
         switch (target) {
-        case EditTarget::Name:
-            if (!text.isEmpty()) renameNode(nodeIdx, text);
+        case EditTarget::Name: {
+            if (text.isEmpty()) break;
+            const Node& node = m_doc->tree.nodes[nodeIdx];
+            // ASCII edit on Hex/Padding nodes
+            if (isHexPreview(node.kind)) {
+                setNodeValue(nodeIdx, subLine, text, /*isAscii=*/true);
+            } else {
+                renameNode(nodeIdx, text);
+            }
             break;
+        }
         case EditTarget::Type: {
             bool ok;
             NodeKind k = kindFromTypeName(text, &ok);
@@ -147,6 +155,7 @@ void RcxController::connectEditor(RcxEditor* editor) {
 
 void RcxController::refresh() {
     m_lastResult = m_doc->compose();
+    qDebug() << "refresh() called, text length:" << m_lastResult.text.size();
 
     // Prune stale selections (nodes removed by undo/redo/delete)
     QSet<uint64_t> valid;
@@ -173,22 +182,49 @@ void RcxController::changeNodeKind(int nodeIdx, NodeKind newKind) {
     Node tmp = node;
     tmp.kind = newKind;
     int newSize = tmp.byteSize();
-    int delta = newSize - oldSize;
 
-    QVector<cmd::OffsetAdj> adjs;
-    if (delta != 0 && oldSize > 0 && newSize > 0) {
-        int oldEnd = node.offset + oldSize;
-        auto siblings = m_doc->tree.childrenOf(node.parentId);
-        for (int si : siblings) {
-            if (si == nodeIdx) continue;
-            auto& sib = m_doc->tree.nodes[si];
-            if (sib.offset >= oldEnd)
-                adjs.append({sib.id, sib.offset, sib.offset + delta});
+    if (newSize > 0 && newSize < oldSize) {
+        // Shrinking: insert hex padding to fill gap (no offset shift)
+        int gap = oldSize - newSize;
+        uint64_t parentId = node.parentId;
+        int baseOffset = node.offset + newSize;
+
+        // Push type change with no offset adjustments
+        m_doc->undoStack.push(new RcxCommand(this,
+            cmd::ChangeKind{node.id, node.kind, newKind, {}}));
+
+        // Insert hex nodes to fill the gap (largest first for alignment)
+        int padOffset = baseOffset;
+        while (gap > 0) {
+            NodeKind padKind;
+            int padSize;
+            if (gap >= 8)      { padKind = NodeKind::Hex64; padSize = 8; }
+            else if (gap >= 4) { padKind = NodeKind::Hex32; padSize = 4; }
+            else if (gap >= 2) { padKind = NodeKind::Hex16; padSize = 2; }
+            else               { padKind = NodeKind::Hex8;  padSize = 1; }
+
+            insertNode(parentId, padOffset, padKind,
+                       QString("pad_%1").arg(padOffset, 2, 16, QChar('0')));
+            padOffset += padSize;
+            gap -= padSize;
         }
+    } else {
+        // Same size or larger: adjust sibling offsets as before
+        int delta = newSize - oldSize;
+        QVector<cmd::OffsetAdj> adjs;
+        if (delta != 0 && oldSize > 0 && newSize > 0) {
+            int oldEnd = node.offset + oldSize;
+            auto siblings = m_doc->tree.childrenOf(node.parentId);
+            for (int si : siblings) {
+                if (si == nodeIdx) continue;
+                auto& sib = m_doc->tree.nodes[si];
+                if (sib.offset >= oldEnd)
+                    adjs.append({sib.id, sib.offset, sib.offset + delta});
+            }
+        }
+        m_doc->undoStack.push(new RcxCommand(this,
+            cmd::ChangeKind{node.id, node.kind, newKind, adjs}));
     }
-
-    m_doc->undoStack.push(new RcxCommand(this,
-        cmd::ChangeKind{node.id, node.kind, newKind, adjs}));
 }
 
 void RcxController::renameNode(int nodeIdx, const QString& newName) {
@@ -280,11 +316,13 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 tree.addNode(c.node);
             }
         } else if constexpr (std::is_same_v<T, cmd::Remove>) {
+            qDebug() << "applyCommand Remove, isUndo:" << isUndo << "nodeId:" << c.nodeId;
             if (isUndo) {
                 for (const Node& n : c.subtree)
                     tree.addNode(n);
             } else {
                 QVector<int> indices = tree.subtreeIndices(c.nodeId);
+                qDebug() << "  Removing" << indices.size() << "nodes";
                 std::sort(indices.begin(), indices.end(), std::greater<int>());
                 for (int idx : indices)
                     tree.nodes.remove(idx);
@@ -301,7 +339,8 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
     refresh();
 }
 
-void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text) {
+void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text,
+                                  bool isAscii) {
     if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
     if (!m_doc->provider->isWritable()) return;
 
@@ -317,7 +356,13 @@ void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text) 
     }
 
     bool ok;
-    QByteArray newBytes = fmt::parseValue(editKind, text, &ok);
+    QByteArray newBytes;
+    if (isAscii) {
+        int expectedSize = sizeForKind(editKind);
+        newBytes = fmt::parseAsciiValue(text, expectedSize, &ok);
+    } else {
+        newBytes = fmt::parseValue(editKind, text, &ok);
+    }
     if (!ok) return;
 
     // For strings, pad/truncate to full buffer size
@@ -514,19 +559,30 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
             m_selIds.insert(nodeId);
         m_anchorLine = line;
     } else if (shift && !ctrl) {
-        m_selIds.clear();
-        int from = qMin(m_anchorLine, line);
-        int to   = qMax(m_anchorLine, line);
-        for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
-            uint64_t nid = m_lastResult.meta[i].nodeId;
-            if (nid != 0) m_selIds.insert(nid);
+        if (m_anchorLine < 0) {
+            m_selIds.clear();
+            m_selIds.insert(nodeId);
+            m_anchorLine = line;
+        } else {
+            m_selIds.clear();
+            int from = qMin(m_anchorLine, line);
+            int to   = qMax(m_anchorLine, line);
+            for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
+                uint64_t nid = m_lastResult.meta[i].nodeId;
+                if (nid != 0) m_selIds.insert(nid);
+            }
         }
     } else { // Ctrl+Shift
-        int from = qMin(m_anchorLine, line);
-        int to   = qMax(m_anchorLine, line);
-        for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
-            uint64_t nid = m_lastResult.meta[i].nodeId;
-            if (nid != 0) m_selIds.insert(nid);
+        if (m_anchorLine < 0) {
+            m_selIds.insert(nodeId);
+            m_anchorLine = line;
+        } else {
+            int from = qMin(m_anchorLine, line);
+            int to   = qMax(m_anchorLine, line);
+            for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
+                uint64_t nid = m_lastResult.meta[i].nodeId;
+                if (nid != 0) m_selIds.insert(nid);
+            }
         }
     }
 
@@ -560,6 +616,11 @@ void RcxController::handleMarginClick(RcxEditor* editor, int margin,
     } else if (margin == 0 || margin == 1) {
         emit nodeSelected(lm->nodeIdx);
     }
+}
+
+void RcxController::setEditorFont(const QString& fontName) {
+    for (auto* editor : m_editors)
+        editor->setEditorFont(fontName);
 }
 
 } // namespace rcx
