@@ -437,6 +437,93 @@ private slots:
         QVERIFY(lm);
         QVERIFY(sel.contains(lm->nodeIdx));
     }
+
+    // ── Test: value edit echoes to comment column ──
+    void testValueEditCommentEcho() {
+        m_editor->applyDocument(m_result);
+
+        // Begin value edit on line 1 (UInt16 field)
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 1);
+        QVERIFY(ok);
+        QVERIFY(m_editor->isEditing());
+
+        // Get the line text before any typing
+        QString lineBefore;
+        int len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+            lineBefore = QString::fromUtf8(buf.constData(), len).trimmed();
+        }
+
+        // Initial comment should contain "Enter=Save Esc=Cancel"
+        QVERIFY2(lineBefore.contains("Enter=Save"),
+                 qPrintable("Initial comment missing, got: " + lineBefore));
+
+        // Type a digit to trigger validateEditLive
+        QKeyEvent key5(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, "5");
+        QApplication::sendEvent(m_editor->scintilla(), &key5);
+        QApplication::processEvents();
+
+        // Get line text after typing
+        QString lineAfter;
+        len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+            lineAfter = QString::fromUtf8(buf.constData(), len).trimmed();
+        }
+
+        // Comment should show "!" prefix for invalid value
+        // Since "0x5a4d" + "5" = "0x5a4d5" = 370509 > 65535, it's invalid for UInt16
+        QVERIFY2(lineAfter.contains("! "),
+                 qPrintable("Comment should show '!' for invalid value, got: " + lineAfter));
+
+        // Cancel and reset
+        m_editor->cancelInlineEdit();
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: value validation shows error indicator ──
+    void testValueValidationError() {
+        m_editor->applyDocument(m_result);
+
+        // Begin value edit on line 1 (UInt16 field, value = 23117)
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 1);
+        QVERIFY(ok);
+
+        // Type "999" to make value invalid for UInt16 (appends to existing, making it too large)
+        // Original value 23117 -> typing "999" at end makes it invalid (23117999 > 65535)
+        const char* digits = "999";
+        for (int i = 0; digits[i]; i++) {
+            QKeyEvent key(QEvent::KeyPress, Qt::Key_9, Qt::NoModifier, QString(digits[i]));
+            QApplication::sendEvent(m_editor->scintilla(), &key);
+            QApplication::processEvents();
+        }
+
+        // Get line text - comment should show "! " prefix (error)
+        QString lineText;
+        int len = (int)m_editor->scintilla()->SendScintilla(
+            QsciScintillaBase::SCI_LINELENGTH, (unsigned long)1);
+        if (len > 0) {
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (unsigned long)1, (void*)buf.data());
+            lineText = QString::fromUtf8(buf.constData(), len).trimmed();
+        }
+
+        // Comment should show "! " prefix for invalid value
+        QVERIFY2(lineText.contains("! "),
+                 qPrintable("Comment should show '! ' for invalid value, got: " + lineText));
+
+        // Cancel and reset
+        m_editor->cancelInlineEdit();
+        m_editor->applyDocument(m_result);
+    }
 };
 
 QTEST_MAIN(TestEditor)

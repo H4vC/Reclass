@@ -1,4 +1,5 @@
 #include "editor.h"
+#include <QDebug>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
 #include <Qsci/qscilexercpp.h>
@@ -83,7 +84,7 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
     connect(m_sci, &QsciScintilla::textChanged, this, [this]() {
         if (!m_editState.active) return;
         if (m_editState.target == EditTarget::Value)
-            validateEditLive();
+            QTimer::singleShot(0, this, &RcxEditor::validateEditLive);
     });
 }
 
@@ -933,6 +934,15 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
          lm->nodeKind == NodeKind::Vec4) && lm->subLine > 0)
         m_editState.editKind = NodeKind::Float;
 
+    // Store fixed comment column position for value editing
+    if (target == EditTarget::Value) {
+        ColumnSpan cs = commentSpanFor(*lm, lineText.size());
+        m_editState.commentCol = cs.valid ? cs.start : -1;
+        m_editState.lastValidationOk = true;  // original value is always valid
+    } else {
+        m_editState.commentCol = -1;
+    }
+
     // Disable Scintilla undo during inline edit
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 1);
@@ -958,7 +968,7 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
 
     // Show initial edit hint in comment column
     if (target == EditTarget::Value)
-        setEditComment(QStringLiteral("// Enter=Save Esc=Cancel"));
+        setEditComment(QStringLiteral("Enter=Save Esc=Cancel"));
 
     if (target == EditTarget::Type)
         QTimer::singleShot(0, this, &RcxEditor::showTypeAutocomplete);
@@ -1040,6 +1050,15 @@ void RcxEditor::updateEditableIndicators(int line) {
     if (m_editState.active) return;
     if (line == m_hintLine) return;
 
+    // No cursor hints when selection is empty (prevents desync during batch ops)
+    if (m_currentSelIds.isEmpty()) {
+        if (m_hintLine >= 0) {
+            clearIndicatorLine(IND_EDITABLE, m_hintLine);
+            m_hintLine = -1;
+        }
+        return;
+    }
+
     // If new line is selected, its indicators are managed by applySelectionOverlay
     // But we still need to clear the old non-selected hint line
     const LineMeta* newLm = metaForLine(line);
@@ -1105,25 +1124,34 @@ void RcxEditor::applyHoverCursor() {
 // ── Live value validation ──
 
 void RcxEditor::setEditComment(const QString& comment) {
-    const LineMeta* lm = metaForLine(m_editState.line);
-    if (!lm) return;
+    // Value edit must be active
+    if (m_editState.commentCol < 0) return;
 
+    // Prevent re-entrancy from textChanged signal
+    static bool s_updating = false;
+    if (s_updating) return;
+    s_updating = true;
+
+    // Comment is always at end of line - calculate dynamically as value length changes
     QString lineText = getLineText(m_sci, m_editState.line);
-    ColumnSpan cs = commentSpanFor(*lm, lineText.size());
-    if (!cs.valid) return;
+    int startCol = lineText.size() - kColComment;
+    if (startCol < 0) { s_updating = false; return; }
 
-    // Pad/truncate comment to fixed width
     QString padded = comment.leftJustified(kColComment, ' ').left(kColComment);
 
-    long posA = posFromCol(m_sci, m_editState.line, cs.start);
-    long posB = posFromCol(m_sci, m_editState.line, cs.start + kColComment);
-    if (posB <= posA) return;
+    // Use direct position calculation from line start
+    long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
+                                          (unsigned long)m_editState.line);
+    long posA = lineStart + startCol;
+    long posB = lineStart + startCol + kColComment;
 
     QByteArray utf8 = padded.toUtf8();
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, posA);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, posB);
     m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET,
                          (uintptr_t)utf8.size(), utf8.constData());
+
+    s_updating = false;
 }
 
 void RcxEditor::validateEditLive() {
@@ -1134,13 +1162,24 @@ void RcxEditor::validateEditLive() {
         ? lineText.mid(m_editState.spanStart, editedLen).trimmed() : QString();
     QString errorMsg = fmt::validateValue(m_editState.editKind, text);
 
-    // Show/hide error marker (red background) and update comment
-    if (errorMsg.isEmpty()) {
+    const LineMeta* lm = metaForLine(m_editState.line);
+    const bool isSelected = lm && m_currentSelIds.contains(lm->nodeId);
+    const bool isValid = errorMsg.isEmpty();
+
+    // Only update comment when validation state changes (avoid lag)
+    const bool stateChanged = (isValid != m_editState.lastValidationOk);
+    m_editState.lastValidationOk = isValid;
+
+    // Show/hide error marker (red background)
+    // M_SELECTED has higher priority than M_ERR, so temporarily remove it when error
+    if (isValid) {
         m_sci->markerDelete(m_editState.line, M_ERR);
-        setEditComment(QStringLiteral("// Enter=Save Esc=Cancel"));
+        if (isSelected) m_sci->markerAdd(m_editState.line, M_SELECTED);
+        if (stateChanged) setEditComment("Enter=Save Esc=Cancel");
     } else {
+        if (isSelected) m_sci->markerDelete(m_editState.line, M_SELECTED);
         m_sci->markerAdd(m_editState.line, M_ERR);
-        setEditComment(QStringLiteral("// ") + errorMsg);
+        if (stateChanged) setEditComment("! " + text);
     }
 }
 

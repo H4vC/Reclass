@@ -88,6 +88,8 @@ private:
         int        linelenAfterReplace = 0;
         QString    original;
         NodeKind   editKind = NodeKind::Int32;
+        int        commentCol = -1;  // fixed comment column (stored at edit start)
+        bool       lastValidationOk = true;  // track state to avoid redundant updates
     };
     InlineEditState m_editState;
 
