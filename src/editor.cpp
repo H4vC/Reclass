@@ -993,12 +993,14 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 1);
     m_sci->setReadOnly(false);
-    // Switch to I-beam for editing
-    if (m_cursorOverridden) {
-        QApplication::changeOverrideCursor(Qt::IBeamCursor);
-    } else {
-        QApplication::setOverrideCursor(Qt::IBeamCursor);
-        m_cursorOverridden = true;
+    // Switch to I-beam for editing (skip for Type which uses dropdown picker)
+    if (target != EditTarget::Type) {
+        if (m_cursorOverridden) {
+            QApplication::changeOverrideCursor(Qt::IBeamCursor);
+        } else {
+            QApplication::setOverrideCursor(Qt::IBeamCursor);
+            m_cursorOverridden = true;
+        }
     }
 
     // Re-enable selection rendering for inline edit
@@ -1141,6 +1143,16 @@ void RcxEditor::showTypeListFiltered(const QString& filter) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)' ');
     m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
                          (uintptr_t)1, list.constData());
+
+    // Set arrow cursor on the autocomplete popup (it defaults to pointing hand)
+    for (QObject* child : m_sci->children()) {
+        if (auto* w = qobject_cast<QWidget*>(child)) {
+            if (w->isVisible() && w->windowFlags() & Qt::Popup) {
+                w->setCursor(Qt::ArrowCursor);
+                break;
+            }
+        }
+    }
 }
 
 void RcxEditor::updateTypeListFilter() {
