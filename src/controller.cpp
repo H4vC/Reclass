@@ -740,7 +740,22 @@ void RcxController::duplicateNode(int nodeIdx) {
 
 void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
                                      int subLine, const QPoint& globalPos) {
-    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    // Empty area or CommandRow: show limited menu
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) {
+        QMenu menu;
+        menu.addAction("Append 128 bytes", [this]() {
+            m_suppressRefresh = true;
+            m_doc->undoStack.beginMacro(QStringLiteral("Append 128 bytes"));
+            for (int i = 0; i < 16; i++)
+                insertNode(0, -1, NodeKind::Hex64,
+                           QStringLiteral("field_%1").arg(i));
+            m_doc->undoStack.endMacro();
+            m_suppressRefresh = false;
+            refresh();
+        });
+        menu.exec(globalPos);
+        return;
+    }
     uint64_t clickedId = m_doc->tree.nodes[nodeIdx].id;
 
     // Right-click selection policy: if not in selection, select only this node
@@ -1013,10 +1028,10 @@ void RcxController::updateCommandRow() {
     // Build the row. If we have a symbol, append it after the address.
     QString row;
     if (sym.isEmpty()) {
-        row = QStringLiteral("   %1 Address: %2")
+        row = QStringLiteral("%1 Address: %2")
             .arg(elide(src, 40), elide(addr, 24));
     } else {
-        row = QStringLiteral("   %1 Address: %2  %3")
+        row = QStringLiteral("%1 Address: %2  %3")
             .arg(elide(src, 40), elide(addr, 24), elide(sym, 40));
     }
 

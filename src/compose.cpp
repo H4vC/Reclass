@@ -38,9 +38,10 @@ struct ComposeState {
     void emitLine(const QString& lineText, LineMeta lm) {
         if (currentLine > 0) text += '\n';
         // 3-char fold indicator column: " - " expanded, " + " collapsed, "   " other
-        if (lm.lineKind == LineKind::CommandRow)
-            text += QStringLiteral("   ");
-        else if (lm.foldHead)
+        // CommandRow has no fold prefix (flush left)
+        if (lm.lineKind == LineKind::CommandRow) {
+            // no prefix
+        } else if (lm.foldHead)
             text += lm.foldCollapsed ? QStringLiteral(" + ") : QStringLiteral(" - ");
         else
             text += QStringLiteral("   ");
