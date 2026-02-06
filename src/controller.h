@@ -48,6 +48,17 @@ private:
     Command m_cmd;
 };
 
+// ── Saved source entry ──
+
+struct SavedSourceEntry {
+    QString kind;          // "File" or "Process"
+    QString displayName;   // filename or process name
+    QString filePath;      // for File sources
+    uint32_t pid = 0;      // for Process sources
+    QString processName;   // for Process sources
+    uint64_t baseAddress = 0;
+};
+
 // ── Controller ──
 
 class RcxController : public QObject {
@@ -96,10 +107,16 @@ private:
     int                m_anchorLine = -1;
     bool               m_suppressRefresh = false;
 
+    // ── Saved sources for quick-switch ──
+    QVector<SavedSourceEntry> m_savedSources;
+    int m_activeSourceIdx = -1;
+
     void connectEditor(RcxEditor* editor);
     void handleMarginClick(RcxEditor* editor, int margin, int line, Qt::KeyboardModifiers mods);
     void updateCommandRow();
     void attachToProcess(uint32_t pid, const QString& processName);
+    void switchToSavedSource(int idx);
+    void pushSavedSourcesToEditors();
 };
 
 } // namespace rcx

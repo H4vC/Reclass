@@ -289,18 +289,79 @@ void RcxController::connectEditor(RcxEditor* editor) {
             break;
         }
         case EditTarget::Source: {
-            if (text == QStringLiteral("File")) {
+            if (text.startsWith(QStringLiteral("#saved:"))) {
+                int idx = text.mid(7).toInt();
+                switchToSavedSource(idx);
+            } else if (text == QStringLiteral("File")) {
                 auto* w = qobject_cast<QWidget*>(parent());
                 QString path = QFileDialog::getOpenFileName(w, "Load Binary Data", {}, "All Files (*)");
-                if (!path.isEmpty()) m_doc->loadData(path);
+                if (!path.isEmpty()) {
+                    // Save current source's base address before switching
+                    if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size())
+                        m_savedSources[m_activeSourceIdx].baseAddress = m_doc->tree.baseAddress;
+
+                    m_doc->loadData(path);
+
+                    // Check if this file is already saved
+                    int existingIdx = -1;
+                    for (int i = 0; i < m_savedSources.size(); i++) {
+                        if (m_savedSources[i].kind == QStringLiteral("File")
+                            && m_savedSources[i].filePath == path) {
+                            existingIdx = i;
+                            break;
+                        }
+                    }
+                    if (existingIdx >= 0) {
+                        m_activeSourceIdx = existingIdx;
+                        m_doc->tree.baseAddress = m_savedSources[existingIdx].baseAddress;
+                    } else {
+                        SavedSourceEntry entry;
+                        entry.kind = QStringLiteral("File");
+                        entry.displayName = QFileInfo(path).fileName();
+                        entry.filePath = path;
+                        entry.baseAddress = m_doc->tree.baseAddress;
+                        m_savedSources.append(entry);
+                        m_activeSourceIdx = m_savedSources.size() - 1;
+                    }
+                    refresh();
+                }
             }
             else if (text == QStringLiteral("Process")) {
 #ifdef _WIN32
                 auto* w = qobject_cast<QWidget*>(parent());
                 ProcessPicker picker(w);
                 if (picker.exec() == QDialog::Accepted) {
-                    attachToProcess(picker.selectedProcessId(),
-                                    picker.selectedProcessName());
+                    // Save current source's base address before switching
+                    if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size())
+                        m_savedSources[m_activeSourceIdx].baseAddress = m_doc->tree.baseAddress;
+
+                    uint32_t pid = picker.selectedProcessId();
+                    QString procName = picker.selectedProcessName();
+                    attachToProcess(pid, procName);
+
+                    // Check if this process is already saved
+                    int existingIdx = -1;
+                    for (int i = 0; i < m_savedSources.size(); i++) {
+                        if (m_savedSources[i].kind == QStringLiteral("Process")
+                            && m_savedSources[i].pid == pid) {
+                            existingIdx = i;
+                            break;
+                        }
+                    }
+                    if (existingIdx >= 0) {
+                        m_activeSourceIdx = existingIdx;
+                        m_savedSources[existingIdx].baseAddress = m_doc->tree.baseAddress;
+                    } else {
+                        SavedSourceEntry entry;
+                        entry.kind = QStringLiteral("Process");
+                        entry.displayName = procName;
+                        entry.pid = pid;
+                        entry.processName = procName;
+                        entry.baseAddress = m_doc->tree.baseAddress;
+                        m_savedSources.append(entry);
+                        m_activeSourceIdx = m_savedSources.size() - 1;
+                    }
+                    refresh();
                 }
 #endif
             }
@@ -396,6 +457,7 @@ void RcxController::refresh() {
         editor->restoreViewState(vs);
     }
     applySelectionOverlays();
+    pushSavedSourcesToEditors();
     updateCommandRow();
 }
 
@@ -1004,6 +1066,42 @@ void RcxController::attachToProcess(uint32_t pid, const QString& processName) {
 #else
     Q_UNUSED(pid); Q_UNUSED(processName);
 #endif
+}
+
+void RcxController::switchToSavedSource(int idx) {
+    if (idx < 0 || idx >= m_savedSources.size()) return;
+    if (idx == m_activeSourceIdx) return;
+
+    // Save current source's base address before switching
+    if (m_activeSourceIdx >= 0 && m_activeSourceIdx < m_savedSources.size())
+        m_savedSources[m_activeSourceIdx].baseAddress = m_doc->tree.baseAddress;
+
+    m_activeSourceIdx = idx;
+    const auto& entry = m_savedSources[idx];
+
+    if (entry.kind == QStringLiteral("File")) {
+        m_doc->loadData(entry.filePath);
+        m_doc->tree.baseAddress = entry.baseAddress;
+        refresh();
+    } else if (entry.kind == QStringLiteral("Process")) {
+#ifdef _WIN32
+        attachToProcess(entry.pid, entry.processName);
+#endif
+    }
+}
+
+void RcxController::pushSavedSourcesToEditors() {
+    QVector<SavedSourceDisplay> display;
+    display.reserve(m_savedSources.size());
+    for (int i = 0; i < m_savedSources.size(); i++) {
+        SavedSourceDisplay d;
+        d.text = QStringLiteral("%1 '%2'")
+            .arg(m_savedSources[i].kind, m_savedSources[i].displayName);
+        d.active = (i == m_activeSourceIdx);
+        display.append(d);
+    }
+    for (auto* editor : m_editors)
+        editor->setSavedSources(display);
 }
 
 void RcxController::handleMarginClick(RcxEditor* editor, int margin,

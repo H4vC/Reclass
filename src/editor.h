@@ -9,6 +9,11 @@ class QsciLexerCPP;
 
 namespace rcx {
 
+struct SavedSourceDisplay {
+    QString text;
+    bool active = false;
+};
+
 class RcxEditor : public QWidget {
     Q_OBJECT
 public:
@@ -44,6 +49,9 @@ public:
 
     // Custom type names (struct types from the tree) shown in type picker
     void setCustomTypeNames(const QStringList& names) { m_customTypeNames = names; }
+
+    // Saved sources for quick-switch in source picker
+    void setSavedSources(const QVector<SavedSourceDisplay>& sources) { m_savedSourceDisplay = sources; }
 
 signals:
     void marginClicked(int margin, int line, Qt::KeyboardModifiers mods);
@@ -108,6 +116,9 @@ private:
 
     // ── Custom type names for type picker ──
     QStringList m_customTypeNames;
+
+    // ── Saved sources for quick-switch ──
+    QVector<SavedSourceDisplay> m_savedSourceDisplay;
 
     // ── Reentrancy guards ──
     bool m_clampingSelection = false;

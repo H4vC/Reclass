@@ -1453,6 +1453,17 @@ void RcxEditor::showSourcePicker() {
     menu.addAction("File");
     menu.addAction("Process");
 
+    // Saved sources below separator (with checkmarks)
+    if (!m_savedSourceDisplay.isEmpty()) {
+        menu.addSeparator();
+        for (int i = 0; i < m_savedSourceDisplay.size(); i++) {
+            auto* act = menu.addAction(m_savedSourceDisplay[i].text);
+            act->setCheckable(true);
+            act->setChecked(m_savedSourceDisplay[i].active);
+            act->setData(i);
+        }
+    }
+
     int lineH = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT, 0);
     int x = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION,
                                        0, m_editState.posStart);
@@ -1463,7 +1474,10 @@ void RcxEditor::showSourcePicker() {
     QAction* sel = menu.exec(pos);
     if (sel) {
         auto info = endInlineEdit();
-        emit inlineEditCommitted(info.nodeIdx, info.subLine, info.target, sel->text());
+        QString text = sel->text();
+        if (sel->data().isValid())
+            text = QStringLiteral("#saved:") + QString::number(sel->data().toInt());
+        emit inlineEditCommitted(info.nodeIdx, info.subLine, info.target, text);
     } else {
         cancelInlineEdit();
     }
