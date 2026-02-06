@@ -41,6 +41,9 @@ public:
     void setEditorFont(const QString& fontName);
     static void setGlobalFontName(const QString& fontName);
 
+    // Custom type names (struct types from the tree) shown in type picker
+    void setCustomTypeNames(const QStringList& names) { m_customTypeNames = names; }
+
 signals:
     void marginClicked(int margin, int line, Qt::KeyboardModifiers mods);
     void contextMenuRequested(int line, int nodeIdx, int subLine, QPoint globalPos);
@@ -101,6 +104,9 @@ private:
 
     // ── Tab cycling state ──
     EditTarget m_lastTabTarget = EditTarget::Value;
+
+    // ── Custom type names for type picker ──
+    QStringList m_customTypeNames;
 
     // ── Reentrancy guards ──
     bool m_clampingSelection = false;

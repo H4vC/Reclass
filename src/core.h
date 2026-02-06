@@ -71,7 +71,7 @@ inline constexpr KindMeta kKindMeta[] = {
     {NodeKind::Double,    "Double",    "double",      8,  1,  8, KF_None},
     {NodeKind::Bool,      "Bool",      "bool",        1,  1,  1, KF_None},
     {NodeKind::Pointer32, "Pointer32", "ptr32",       4,  1,  4, KF_None},
-    {NodeKind::Pointer64, "Pointer64", "ptr64",       8,  1,  8, KF_None},
+    {NodeKind::Pointer64, "Pointer64", "void*",       8,  1,  8, KF_None},
     {NodeKind::Vec2,      "Vec2",      "Vec2",        8,  2,  4, KF_Vector},
     {NodeKind::Vec3,      "Vec3",      "Vec3",       12,  3,  4, KF_Vector},
     {NodeKind::Vec4,      "Vec4",      "Vec4",       16,  4,  4, KF_Vector},

@@ -271,291 +271,243 @@ void MainWindow::newFile() {
     auto* doc = new RcxDocument(this);
 
     // ══════════════════════════════════════════════════════════════════════════
-    // PE Header Demo - Realistic PE32+ (64-bit) executable structure
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layout:
-    //   0x000: DOS Header (64 bytes)
-    //   0x040: DOS Stub (64 bytes padding)
-    //   0x080: PE Signature (4 bytes)
-    //   0x084: File Header (20 bytes)
-    //   0x098: Optional Header PE32+ (240 bytes)
-    //     - Standard fields (24 bytes)
-    //     - Windows fields (88 bytes)
-    //     - Data Directories (16 * 8 = 128 bytes)
-    //   0x188: Section Headers (4 * 40 = 160 bytes)
-    //   0x228: End of headers (total 552 bytes)
+    // _PEB64 Demo — Process Environment Block (0x7D0 bytes)
     // ══════════════════════════════════════════════════════════════════════════
 
-    QByteArray peData(0x300, '\0');  // 768 bytes
-    char* d = peData.data();
+    QByteArray pebData(0x7D0, '\0');
+    char* d = pebData.data();
 
-    // ── DOS Header (IMAGE_DOS_HEADER) ──
-    d[0x00] = 'M'; d[0x01] = 'Z';                    // e_magic
-    *(uint16_t*)(d + 0x02) = 0x0090;                 // e_cblp (bytes on last page)
-    *(uint16_t*)(d + 0x04) = 0x0003;                 // e_cp (pages in file)
-    *(uint16_t*)(d + 0x06) = 0x0000;                 // e_crlc (relocations)
-    *(uint16_t*)(d + 0x08) = 0x0004;                 // e_cparhdr (header size in paragraphs)
-    *(uint16_t*)(d + 0x0A) = 0x0000;                 // e_minalloc
-    *(uint16_t*)(d + 0x0C) = 0xFFFF;                 // e_maxalloc
-    *(uint16_t*)(d + 0x0E) = 0x0000;                 // e_ss
-    *(uint16_t*)(d + 0x10) = 0x00B8;                 // e_sp
-    *(uint16_t*)(d + 0x12) = 0x0000;                 // e_csum
-    *(uint16_t*)(d + 0x14) = 0x0000;                 // e_ip
-    *(uint16_t*)(d + 0x16) = 0x0000;                 // e_cs
-    *(uint16_t*)(d + 0x18) = 0x0040;                 // e_lfarlc
-    *(uint16_t*)(d + 0x1A) = 0x0000;                 // e_ovno
-    // e_res[4] at 0x1C-0x23 (zeroed)
-    *(uint16_t*)(d + 0x24) = 0x0000;                 // e_oemid
-    *(uint16_t*)(d + 0x26) = 0x0000;                 // e_oeminfo
-    // e_res2[10] at 0x28-0x3B (zeroed)
-    *(uint32_t*)(d + 0x3C) = 0x00000080;             // e_lfanew → PE header at 0x80
+    auto w8  = [&](int off, uint8_t  v) { d[off] = (char)v; };
+    auto w16 = [&](int off, uint16_t v) { memcpy(d+off, &v, 2); };
+    auto w32 = [&](int off, uint32_t v) { memcpy(d+off, &v, 4); };
+    auto w64 = [&](int off, uint64_t v) { memcpy(d+off, &v, 8); };
 
-    // ── PE Signature ──
-    const int peOff = 0x80;
-    d[peOff+0] = 'P'; d[peOff+1] = 'E'; d[peOff+2] = 0; d[peOff+3] = 0;
+    w8 (0x002, 1);                              // BeingDebugged
+    w8 (0x003, 0x04);                           // BitField
+    w64(0x008, 0xFFFFFFFFFFFFFFFFULL);          // Mutant (-1)
+    w64(0x010, 0x00007FF6DE120000ULL);          // ImageBaseAddress
+    w64(0x018, 0x00007FFE3B8B53C0ULL);          // Ldr
+    w64(0x020, 0x000001A4C3E20F90ULL);          // ProcessParameters
+    w64(0x030, 0x000001A4C3D40000ULL);          // ProcessHeap
+    w64(0x038, 0x00007FFE3B8D4260ULL);          // FastPebLock
+    w32(0x050, 0x01);                           // CrossProcessFlags
+    w64(0x058, 0x00007FFE3B720000ULL);          // KernelCallbackTable
+    w64(0x068, 0x00007FFE3E570000ULL);          // ApiSetMap
+    w64(0x078, 0x00007FFE3B8D3F50ULL);          // TlsBitmap
+    w32(0x080, 0x00000003);                     // TlsBitmapBits[0]
+    w64(0x088, 0x00007FFE38800000ULL);          // ReadOnlySharedMemoryBase
+    w64(0x090, 0x00007FFE38820000ULL);          // SharedData
+    w64(0x0A0, 0x00007FFE3B8D1000ULL);          // AnsiCodePageData
+    w64(0x0A8, 0x00007FFE3B8D2040ULL);          // OemCodePageData
+    w64(0x0B0, 0x00007FFE3B8CE020ULL);          // UnicodeCaseTableData
+    w32(0x0B8, 8);                              // NumberOfProcessors
+    w32(0x0BC, 0x70);                           // NtGlobalFlag
+    w64(0x0C0, 0xFFFFFFFF7C91E000ULL);          // CriticalSectionTimeout
+    w64(0x0C8, 0x0000000000100000ULL);          // HeapSegmentReserve
+    w64(0x0D0, 0x0000000000002000ULL);          // HeapSegmentCommit
+    w32(0x0E8, 4);                              // NumberOfHeaps
+    w32(0x0EC, 16);                             // MaximumNumberOfHeaps
+    w64(0x0F0, 0x000001A4C3D40688ULL);          // ProcessHeaps
+    w64(0x0F8, 0x00007FFE388B0000ULL);          // GdiSharedHandleTable
+    w64(0x110, 0x00007FFE3B8D42E8ULL);          // LoaderLock
+    w32(0x118, 10);                             // OSMajorVersion
+    w16(0x120, 19045);                          // OSBuildNumber
+    w32(0x124, 2);                              // OSPlatformId
+    w32(0x128, 3);                              // ImageSubsystem (CUI)
+    w32(0x12C, 10);                             // ImageSubsystemMajorVersion
+    w64(0x138, 0x00000000000000FFULL);          // ActiveProcessAffinityMask
+    w64(0x238, 0x00007FFE3B8D3F70ULL);          // TlsExpansionBitmap
+    w32(0x2C0, 1);                              // SessionId
+    w64(0x2F8, 0x000001A4C3E21000ULL);          // ActivationContextData
+    w64(0x308, 0x00007FFE38840000ULL);          // SystemDefaultActivationContextData
+    w64(0x318, 0x0000000000002000ULL);          // MinimumStackCommit
+    w16(0x34C, 1252);                           // ActiveCodePage
+    w16(0x34E, 437);                            // OemCodePage
+    w64(0x358, 0x000001A4C3E30000ULL);          // WerRegistrationData
+    w64(0x380, 0x00007FFE38890000ULL);          // CsrServerReadOnlySharedMemoryBase
+    w64(0x390, 0x000000D87B5E5390ULL);          // TppWorkerpList.Flink (self)
+    w64(0x398, 0x000000D87B5E5390ULL);          // TppWorkerpList.Blink (self)
+    w64(0x7B8, 0x00007FFE38860000ULL);          // LeapSecondData
 
-    // ── File Header (IMAGE_FILE_HEADER) ──
-    const int fhOff = peOff + 4;  // 0x84
-    *(uint16_t*)(d + fhOff + 0)  = 0x8664;           // Machine (AMD64)
-    *(uint16_t*)(d + fhOff + 2)  = 0x0004;           // NumberOfSections
-    *(uint32_t*)(d + fhOff + 4)  = 0x65A3B2C1;       // TimeDateStamp
-    *(uint32_t*)(d + fhOff + 8)  = 0x00000000;       // PointerToSymbolTable
-    *(uint32_t*)(d + fhOff + 12) = 0x00000000;       // NumberOfSymbols
-    *(uint16_t*)(d + fhOff + 16) = 0x00F0;           // SizeOfOptionalHeader (240)
-    *(uint16_t*)(d + fhOff + 18) = 0x0022;           // Characteristics (EXECUTABLE|LARGE_ADDRESS_AWARE)
-
-    // ── Optional Header PE32+ (IMAGE_OPTIONAL_HEADER64) ──
-    const int ohOff = fhOff + 20;  // 0x98
-    *(uint16_t*)(d + ohOff + 0)  = 0x020B;           // Magic (PE32+)
-    *(uint8_t*)(d + ohOff + 2)   = 0x0E;             // MajorLinkerVersion
-    *(uint8_t*)(d + ohOff + 3)   = 0x00;             // MinorLinkerVersion
-    *(uint32_t*)(d + ohOff + 4)  = 0x00012000;       // SizeOfCode
-    *(uint32_t*)(d + ohOff + 8)  = 0x00008000;       // SizeOfInitializedData
-    *(uint32_t*)(d + ohOff + 12) = 0x00000000;       // SizeOfUninitializedData
-    *(uint32_t*)(d + ohOff + 16) = 0x00001000;       // AddressOfEntryPoint
-    *(uint32_t*)(d + ohOff + 20) = 0x00001000;       // BaseOfCode
-
-    // Windows-specific fields (PE32+)
-    *(uint64_t*)(d + ohOff + 24) = 0x0000000140000000ULL; // ImageBase
-    *(uint32_t*)(d + ohOff + 32) = 0x00001000;       // SectionAlignment
-    *(uint32_t*)(d + ohOff + 36) = 0x00000200;       // FileAlignment
-    *(uint16_t*)(d + ohOff + 40) = 0x0006;           // MajorOperatingSystemVersion
-    *(uint16_t*)(d + ohOff + 42) = 0x0000;           // MinorOperatingSystemVersion
-    *(uint16_t*)(d + ohOff + 44) = 0x0000;           // MajorImageVersion
-    *(uint16_t*)(d + ohOff + 46) = 0x0000;           // MinorImageVersion
-    *(uint16_t*)(d + ohOff + 48) = 0x0006;           // MajorSubsystemVersion
-    *(uint16_t*)(d + ohOff + 50) = 0x0000;           // MinorSubsystemVersion
-    *(uint32_t*)(d + ohOff + 52) = 0x00000000;       // Win32VersionValue
-    *(uint32_t*)(d + ohOff + 56) = 0x00025000;       // SizeOfImage
-    *(uint32_t*)(d + ohOff + 60) = 0x00000200;       // SizeOfHeaders
-    *(uint32_t*)(d + ohOff + 64) = 0x00000000;       // CheckSum
-    *(uint16_t*)(d + ohOff + 68) = 0x0003;           // Subsystem (CONSOLE)
-    *(uint16_t*)(d + ohOff + 70) = 0x8160;           // DllCharacteristics (DYNAMIC_BASE|NX_COMPAT|TERMINAL_SERVER_AWARE)
-    *(uint64_t*)(d + ohOff + 72) = 0x0000000000100000ULL; // SizeOfStackReserve
-    *(uint64_t*)(d + ohOff + 80) = 0x0000000000001000ULL; // SizeOfStackCommit
-    *(uint64_t*)(d + ohOff + 88) = 0x0000000000100000ULL; // SizeOfHeapReserve
-    *(uint64_t*)(d + ohOff + 96) = 0x0000000000001000ULL; // SizeOfHeapCommit
-    *(uint32_t*)(d + ohOff + 104) = 0x00000000;      // LoaderFlags
-    *(uint32_t*)(d + ohOff + 108) = 0x00000010;      // NumberOfRvaAndSizes (16)
-
-    // ── Data Directories (16 entries × 8 bytes) ──
-    const int ddOff = ohOff + 112;  // 0x108
-    // Each entry: VirtualAddress (4) + Size (4)
-    struct { uint32_t rva; uint32_t size; } dataDirs[16] = {
-        {0x00000000, 0x00000000},  // 0: Export
-        {0x00014000, 0x000000A0},  // 1: Import
-        {0x00000000, 0x00000000},  // 2: Resource
-        {0x00000000, 0x00000000},  // 3: Exception
-        {0x00000000, 0x00000000},  // 4: Security
-        {0x00000000, 0x00000000},  // 5: BaseReloc
-        {0x00013000, 0x00000038},  // 6: Debug
-        {0x00000000, 0x00000000},  // 7: Architecture
-        {0x00000000, 0x00000000},  // 8: GlobalPtr
-        {0x00000000, 0x00000000},  // 9: TLS
-        {0x00000000, 0x00000000},  // 10: LoadConfig
-        {0x00000000, 0x00000000},  // 11: BoundImport
-        {0x00014050, 0x00000048},  // 12: IAT
-        {0x00000000, 0x00000000},  // 13: DelayImport
-        {0x00000000, 0x00000000},  // 14: CLR
-        {0x00000000, 0x00000000},  // 15: Reserved
-    };
-    for (int i = 0; i < 16; i++) {
-        *(uint32_t*)(d + ddOff + i*8 + 0) = dataDirs[i].rva;
-        *(uint32_t*)(d + ddOff + i*8 + 4) = dataDirs[i].size;
-    }
-
-    // ── Section Headers (4 sections × 40 bytes) ──
-    const int shOff = ddOff + 128;  // 0x188
-    struct SectionDef { const char* name; uint32_t vsize; uint32_t vaddr; uint32_t rawsz; uint32_t rawptr; uint32_t chars; };
-    SectionDef sections[4] = {
-        {".text",   0x00011234, 0x00001000, 0x00011400, 0x00000200, 0x60000020},  // CODE|EXECUTE|READ
-        {".rdata",  0x00002ABC, 0x00013000, 0x00002C00, 0x00011600, 0x40000040},  // INITIALIZED|READ
-        {".data",   0x00001000, 0x00016000, 0x00000400, 0x00014200, 0xC0000040},  // INITIALIZED|READ|WRITE
-        {".pdata",  0x00000800, 0x00017000, 0x00000800, 0x00014600, 0x40000040},  // INITIALIZED|READ
-    };
-    for (int i = 0; i < 4; i++) {
-        int off = shOff + i * 40;
-        memcpy(d + off, sections[i].name, 8);                    // Name[8]
-        *(uint32_t*)(d + off + 8)  = sections[i].vsize;          // VirtualSize
-        *(uint32_t*)(d + off + 12) = sections[i].vaddr;          // VirtualAddress
-        *(uint32_t*)(d + off + 16) = sections[i].rawsz;          // SizeOfRawData
-        *(uint32_t*)(d + off + 20) = sections[i].rawptr;         // PointerToRawData
-        *(uint32_t*)(d + off + 24) = 0x00000000;                 // PointerToRelocations
-        *(uint32_t*)(d + off + 28) = 0x00000000;                 // PointerToLinenumbers
-        *(uint16_t*)(d + off + 32) = 0x0000;                     // NumberOfRelocations
-        *(uint16_t*)(d + off + 34) = 0x0000;                     // NumberOfLinenumbers
-        *(uint32_t*)(d + off + 36) = sections[i].chars;          // Characteristics
-    }
-
-    doc->loadData(peData);
-    doc->tree.baseAddress = 0x140000000;  // Typical 64-bit image base
+    doc->loadData(pebData);
+    doc->tree.baseAddress = 0x000000D87B5E5000ULL;
 
     // ══════════════════════════════════════════════════════════════════════════
-    // Build Node Tree
+    // Build _PEB64 Node Tree (0x7D0 bytes, unions mapped to first member)
     // ══════════════════════════════════════════════════════════════════════════
 
     auto addField = [&](uint64_t parent, int offset, NodeKind kind, const QString& name) -> uint64_t {
-        Node n;
-        n.kind = kind;
-        n.name = name;
-        n.parentId = parent;
-        n.offset = offset;
+        Node n; n.kind = kind; n.name = name;
+        n.parentId = parent; n.offset = offset;
         int idx = doc->tree.addNode(n);
         return doc->tree.nodes[idx].id;
     };
-
-    auto addStruct = [&](uint64_t parent, int offset, const QString& typeName, const QString& name) -> uint64_t {
-        Node n;
-        n.kind = NodeKind::Struct;
-        n.structTypeName = typeName;
-        n.name = name;
-        n.parentId = parent;
-        n.offset = offset;
-        n.collapsed = true;  // Auto-collapse structs
+    auto addPad = [&](uint64_t parent, int offset, int len, const QString& name) {
+        Node n; n.kind = NodeKind::Padding; n.name = name;
+        n.parentId = parent; n.offset = offset; n.arrayLen = len;
+        doc->tree.addNode(n);
+    };
+    auto addStruct = [&](uint64_t parent, int offset, const QString& typeName, const QString& name, bool collapse = true) -> uint64_t {
+        Node n; n.kind = NodeKind::Struct;
+        n.structTypeName = typeName; n.name = name;
+        n.parentId = parent; n.offset = offset; n.collapsed = collapse;
         int idx = doc->tree.addNode(n);
         return doc->tree.nodes[idx].id;
     };
-
-    auto addArray = [&](uint64_t parent, int offset, const QString& name, int count, NodeKind elemKind) -> uint64_t {
-        Node n;
-        n.kind = NodeKind::Array;
-        n.name = name;
-        n.parentId = parent;
-        n.offset = offset;
-        n.arrayLen = count;
-        n.elementKind = elemKind;
-        n.collapsed = true;  // Auto-collapse arrays
-        int idx = doc->tree.addNode(n);
-        return doc->tree.nodes[idx].id;
+    auto addArray = [&](uint64_t parent, int offset, const QString& name, int count, NodeKind elemKind) {
+        Node n; n.kind = NodeKind::Array; n.name = name;
+        n.parentId = parent; n.offset = offset;
+        n.arrayLen = count; n.elementKind = elemKind;
+        n.collapsed = true;
+        doc->tree.addNode(n);
     };
 
-    // ── Root: IMAGE_DOS_HEADER ──
-    uint64_t dosId = addStruct(0, 0x00, "IMAGE_DOS_HEADER", "DosHeader");
-    addField(dosId, 0x00, NodeKind::UInt16, "e_magic");
-    addField(dosId, 0x02, NodeKind::UInt16, "e_cblp");
-    addField(dosId, 0x04, NodeKind::UInt16, "e_cp");
-    addField(dosId, 0x06, NodeKind::UInt16, "e_crlc");
-    addField(dosId, 0x08, NodeKind::UInt16, "e_cparhdr");
-    addField(dosId, 0x0A, NodeKind::UInt16, "e_minalloc");
-    addField(dosId, 0x0C, NodeKind::UInt16, "e_maxalloc");
-    addField(dosId, 0x0E, NodeKind::UInt16, "e_ss");
-    addField(dosId, 0x10, NodeKind::UInt16, "e_sp");
-    addField(dosId, 0x12, NodeKind::UInt16, "e_csum");
-    addField(dosId, 0x14, NodeKind::UInt16, "e_ip");
-    addField(dosId, 0x16, NodeKind::UInt16, "e_cs");
-    addField(dosId, 0x18, NodeKind::UInt16, "e_lfarlc");
-    addField(dosId, 0x1A, NodeKind::UInt16, "e_ovno");
-    addField(dosId, 0x3C, NodeKind::UInt32, "e_lfanew");
+    // Root struct (not collapsed so fields are visible on open)
+    uint64_t peb = addStruct(0, 0, "_PEB64", "Peb", false);
 
-    // ── PE Signature ──
-    addField(0, peOff, NodeKind::UInt32, "Signature");
+    // 0x000 – 0x007
+    addField(peb, 0x000, NodeKind::UInt8,     "InheritedAddressSpace");
+    addField(peb, 0x001, NodeKind::UInt8,     "ReadImageFileExecOptions");
+    addField(peb, 0x002, NodeKind::UInt8,     "BeingDebugged");
+    addField(peb, 0x003, NodeKind::UInt8,     "BitField");
+    addPad  (peb, 0x004, 4,                   "Padding0");
 
-    // ── IMAGE_FILE_HEADER ──
-    uint64_t fhId = addStruct(0, fhOff, "IMAGE_FILE_HEADER", "FileHeader");
-    addField(fhId, 0, NodeKind::UInt16, "Machine");
-    addField(fhId, 2, NodeKind::UInt16, "NumberOfSections");
-    addField(fhId, 4, NodeKind::UInt32, "TimeDateStamp");
-    addField(fhId, 8, NodeKind::UInt32, "PointerToSymbolTable");
-    addField(fhId, 12, NodeKind::UInt32, "NumberOfSymbols");
-    addField(fhId, 16, NodeKind::UInt16, "SizeOfOptionalHeader");
-    addField(fhId, 18, NodeKind::UInt16, "Characteristics");
+    // 0x008 – 0x04F
+    addField(peb, 0x008, NodeKind::Pointer64, "Mutant");
+    addField(peb, 0x010, NodeKind::Pointer64, "ImageBaseAddress");
+    addField(peb, 0x018, NodeKind::Pointer64, "Ldr");
+    addField(peb, 0x020, NodeKind::Pointer64, "ProcessParameters");
+    addField(peb, 0x028, NodeKind::Pointer64, "SubSystemData");
+    addField(peb, 0x030, NodeKind::Pointer64, "ProcessHeap");
+    addField(peb, 0x038, NodeKind::Pointer64, "FastPebLock");
+    addField(peb, 0x040, NodeKind::Pointer64, "AtlThunkSListPtr");
+    addField(peb, 0x048, NodeKind::Pointer64, "IFEOKey");
 
-    // ── IMAGE_OPTIONAL_HEADER64 ──
-    uint64_t ohId = addStruct(0, ohOff, "IMAGE_OPTIONAL_HEADER64", "OptionalHeader");
-    addField(ohId, 0, NodeKind::UInt16, "Magic");
-    addField(ohId, 2, NodeKind::UInt8, "MajorLinkerVersion");
-    addField(ohId, 3, NodeKind::UInt8, "MinorLinkerVersion");
-    addField(ohId, 4, NodeKind::UInt32, "SizeOfCode");
-    addField(ohId, 8, NodeKind::UInt32, "SizeOfInitializedData");
-    addField(ohId, 12, NodeKind::UInt32, "SizeOfUninitializedData");
-    addField(ohId, 16, NodeKind::UInt32, "AddressOfEntryPoint");
-    addField(ohId, 20, NodeKind::UInt32, "BaseOfCode");
-    addField(ohId, 24, NodeKind::UInt64, "ImageBase");
-    addField(ohId, 32, NodeKind::UInt32, "SectionAlignment");
-    addField(ohId, 36, NodeKind::UInt32, "FileAlignment");
-    addField(ohId, 40, NodeKind::UInt16, "MajorOperatingSystemVersion");
-    addField(ohId, 42, NodeKind::UInt16, "MinorOperatingSystemVersion");
-    addField(ohId, 44, NodeKind::UInt16, "MajorImageVersion");
-    addField(ohId, 46, NodeKind::UInt16, "MinorImageVersion");
-    addField(ohId, 48, NodeKind::UInt16, "MajorSubsystemVersion");
-    addField(ohId, 50, NodeKind::UInt16, "MinorSubsystemVersion");
-    addField(ohId, 52, NodeKind::UInt32, "Win32VersionValue");
-    addField(ohId, 56, NodeKind::UInt32, "SizeOfImage");
-    addField(ohId, 60, NodeKind::UInt32, "SizeOfHeaders");
-    addField(ohId, 64, NodeKind::UInt32, "CheckSum");
-    addField(ohId, 68, NodeKind::UInt16, "Subsystem");
-    addField(ohId, 70, NodeKind::UInt16, "DllCharacteristics");
-    addField(ohId, 72, NodeKind::UInt64, "SizeOfStackReserve");
-    addField(ohId, 80, NodeKind::UInt64, "SizeOfStackCommit");
-    addField(ohId, 88, NodeKind::UInt64, "SizeOfHeapReserve");
-    addField(ohId, 96, NodeKind::UInt64, "SizeOfHeapCommit");
-    addField(ohId, 104, NodeKind::UInt32, "LoaderFlags");
-    addField(ohId, 108, NodeKind::UInt32, "NumberOfRvaAndSizes");
+    // 0x050 – 0x07F
+    addField(peb, 0x050, NodeKind::UInt32,    "CrossProcessFlags");
+    addPad  (peb, 0x054, 4,                   "Padding1");
+    addField(peb, 0x058, NodeKind::Pointer64, "KernelCallbackTable");
+    addField(peb, 0x060, NodeKind::UInt32,    "SystemReserved");
+    addField(peb, 0x064, NodeKind::UInt32,    "AtlThunkSListPtr32");
+    addField(peb, 0x068, NodeKind::Pointer64, "ApiSetMap");
+    addField(peb, 0x070, NodeKind::UInt32,    "TlsExpansionCounter");
+    addPad  (peb, 0x074, 4,                   "Padding2");
+    addField(peb, 0x078, NodeKind::Pointer64, "TlsBitmap");
+    addArray(peb, 0x080, "TlsBitmapBits", 2, NodeKind::UInt32);
 
-    // ── Data Directories Array (16 entries) ──
-    uint64_t ddArrId = addArray(ohId, 112, "DataDirectory", 16, NodeKind::Struct);
-    const char* ddNames[16] = {
-        "Export", "Import", "Resource", "Exception",
-        "Security", "BaseReloc", "Debug", "Architecture",
-        "GlobalPtr", "TLS", "LoadConfig", "BoundImport",
-        "IAT", "DelayImport", "CLR", "Reserved"
-    };
-    for (int i = 0; i < 16; i++) {
-        uint64_t entryId = addStruct(ddArrId, i * 8, "IMAGE_DATA_DIRECTORY", QString("%1").arg(ddNames[i]));
-        addField(entryId, 0, NodeKind::UInt32, "VirtualAddress");
-        addField(entryId, 4, NodeKind::UInt32, "Size");
+    // 0x088 – 0x0BF
+    addField(peb, 0x088, NodeKind::Pointer64, "ReadOnlySharedMemoryBase");
+    addField(peb, 0x090, NodeKind::Pointer64, "SharedData");
+    addField(peb, 0x098, NodeKind::Pointer64, "ReadOnlyStaticServerData");
+    addField(peb, 0x0A0, NodeKind::Pointer64, "AnsiCodePageData");
+    addField(peb, 0x0A8, NodeKind::Pointer64, "OemCodePageData");
+    addField(peb, 0x0B0, NodeKind::Pointer64, "UnicodeCaseTableData");
+    addField(peb, 0x0B8, NodeKind::UInt32,    "NumberOfProcessors");
+    addField(peb, 0x0BC, NodeKind::Hex32,     "NtGlobalFlag");
+
+    // 0x0C0 – 0x0EF
+    addField(peb, 0x0C0, NodeKind::UInt64,    "CriticalSectionTimeout");
+    addField(peb, 0x0C8, NodeKind::UInt64,    "HeapSegmentReserve");
+    addField(peb, 0x0D0, NodeKind::UInt64,    "HeapSegmentCommit");
+    addField(peb, 0x0D8, NodeKind::UInt64,    "HeapDeCommitTotalFreeThreshold");
+    addField(peb, 0x0E0, NodeKind::UInt64,    "HeapDeCommitFreeBlockThreshold");
+    addField(peb, 0x0E8, NodeKind::UInt32,    "NumberOfHeaps");
+    addField(peb, 0x0EC, NodeKind::UInt32,    "MaximumNumberOfHeaps");
+
+    // 0x0F0 – 0x13F
+    addField(peb, 0x0F0, NodeKind::Pointer64, "ProcessHeaps");
+    addField(peb, 0x0F8, NodeKind::Pointer64, "GdiSharedHandleTable");
+    addField(peb, 0x100, NodeKind::Pointer64, "ProcessStarterHelper");
+    addField(peb, 0x108, NodeKind::UInt32,    "GdiDCAttributeList");
+    addPad  (peb, 0x10C, 4,                   "Padding3");
+    addField(peb, 0x110, NodeKind::Pointer64, "LoaderLock");
+    addField(peb, 0x118, NodeKind::UInt32,    "OSMajorVersion");
+    addField(peb, 0x11C, NodeKind::UInt32,    "OSMinorVersion");
+    addField(peb, 0x120, NodeKind::UInt16,    "OSBuildNumber");
+    addField(peb, 0x122, NodeKind::UInt16,    "OSCSDVersion");
+    addField(peb, 0x124, NodeKind::UInt32,    "OSPlatformId");
+    addField(peb, 0x128, NodeKind::UInt32,    "ImageSubsystem");
+    addField(peb, 0x12C, NodeKind::UInt32,    "ImageSubsystemMajorVersion");
+    addField(peb, 0x130, NodeKind::UInt32,    "ImageSubsystemMinorVersion");
+    addPad  (peb, 0x134, 4,                   "Padding4");
+    addField(peb, 0x138, NodeKind::UInt64,    "ActiveProcessAffinityMask");
+
+    // 0x140 – 0x22F
+    addArray(peb, 0x140, "GdiHandleBuffer", 60, NodeKind::UInt32);
+
+    // 0x230 – 0x2BF
+    addField(peb, 0x230, NodeKind::Pointer64, "PostProcessInitRoutine");
+    addField(peb, 0x238, NodeKind::Pointer64, "TlsExpansionBitmap");
+    addArray(peb, 0x240, "TlsExpansionBitmapBits", 32, NodeKind::UInt32);
+
+    // 0x2C0 – 0x2E7
+    addField(peb, 0x2C0, NodeKind::UInt32,    "SessionId");
+    addPad  (peb, 0x2C4, 4,                   "Padding5");
+    addField(peb, 0x2C8, NodeKind::UInt64,    "AppCompatFlags");
+    addField(peb, 0x2D0, NodeKind::UInt64,    "AppCompatFlagsUser");
+    addField(peb, 0x2D8, NodeKind::Pointer64, "pShimData");
+    addField(peb, 0x2E0, NodeKind::Pointer64, "AppCompatInfo");
+
+    // 0x2E8 – 0x2F7: _STRING64 CSDVersion
+    {
+        uint64_t sid = addStruct(peb, 0x2E8, "_STRING64", "CSDVersion");
+        addField(sid, 0, NodeKind::UInt16,    "Length");
+        addField(sid, 2, NodeKind::UInt16,    "MaximumLength");
+        addPad  (sid, 4, 4,                   "Pad");
+        addField(sid, 8, NodeKind::Pointer64, "Buffer");
     }
 
-    // ── Section Headers Array (4 sections) ──
-    uint64_t shArrId = addArray(0, shOff, "SectionHeaders", 4, NodeKind::Struct);
-    const char* secNames[4] = {".text", ".rdata", ".data", ".pdata"};
-    for (int i = 0; i < 4; i++) {
-        uint64_t secId = addStruct(shArrId, i * 40, "IMAGE_SECTION_HEADER", QString("%1").arg(secNames[i]));
-        // Name is 8 bytes - show as UTF8 string
-        Node nameNode;
-        nameNode.kind = NodeKind::UTF8;
-        nameNode.name = "Name";
-        nameNode.parentId = secId;
-        nameNode.offset = 0;
-        nameNode.strLen = 8;
-        doc->tree.addNode(nameNode);
-        addField(secId, 8, NodeKind::UInt32, "VirtualSize");
-        addField(secId, 12, NodeKind::UInt32, "VirtualAddress");
-        addField(secId, 16, NodeKind::UInt32, "SizeOfRawData");
-        addField(secId, 20, NodeKind::UInt32, "PointerToRawData");
-        addField(secId, 24, NodeKind::UInt32, "PointerToRelocations");
-        addField(secId, 28, NodeKind::UInt32, "PointerToLinenumbers");
-        addField(secId, 32, NodeKind::UInt16, "NumberOfRelocations");
-        addField(secId, 34, NodeKind::UInt16, "NumberOfLinenumbers");
-        addField(secId, 36, NodeKind::UInt32, "Characteristics");
+    // 0x2F8 – 0x31F
+    addField(peb, 0x2F8, NodeKind::Pointer64, "ActivationContextData");
+    addField(peb, 0x300, NodeKind::Pointer64, "ProcessAssemblyStorageMap");
+    addField(peb, 0x308, NodeKind::Pointer64, "SystemDefaultActivationContextData");
+    addField(peb, 0x310, NodeKind::Pointer64, "SystemAssemblyStorageMap");
+    addField(peb, 0x318, NodeKind::UInt64,    "MinimumStackCommit");
+
+    // 0x320 – 0x34B
+    addArray(peb, 0x320, "SparePointers", 2, NodeKind::UInt64);
+    addField(peb, 0x330, NodeKind::Pointer64, "PatchLoaderData");
+    addField(peb, 0x338, NodeKind::Pointer64, "ChpeV2ProcessInfo");
+    addField(peb, 0x340, NodeKind::UInt32,    "AppModelFeatureState");
+    addArray(peb, 0x344, "SpareUlongs", 2, NodeKind::UInt32);
+    addField(peb, 0x34C, NodeKind::UInt16,    "ActiveCodePage");
+    addField(peb, 0x34E, NodeKind::UInt16,    "OemCodePage");
+    addField(peb, 0x350, NodeKind::UInt16,    "UseCaseMapping");
+    addField(peb, 0x352, NodeKind::UInt16,    "UnusedNlsField");
+
+    // 0x354 – 0x37F
+    addPad  (peb, 0x354, 4,                   "Pad354");
+    addField(peb, 0x358, NodeKind::Pointer64, "WerRegistrationData");
+    addField(peb, 0x360, NodeKind::Pointer64, "WerShipAssertPtr");
+    addField(peb, 0x368, NodeKind::Pointer64, "EcCodeBitMap");
+    addField(peb, 0x370, NodeKind::Pointer64, "pImageHeaderHash");
+    addField(peb, 0x378, NodeKind::UInt32,    "TracingFlags");
+    addPad  (peb, 0x37C, 4,                   "Padding6");
+
+    // 0x380 – 0x39F
+    addField(peb, 0x380, NodeKind::Pointer64, "CsrServerReadOnlySharedMemoryBase");
+    addField(peb, 0x388, NodeKind::UInt64,    "TppWorkerpListLock");
+
+    // LIST_ENTRY64 TppWorkerpList
+    {
+        uint64_t sid = addStruct(peb, 0x390, "LIST_ENTRY64", "TppWorkerpList");
+        addField(sid, 0, NodeKind::Pointer64, "Flink");
+        addField(sid, 8, NodeKind::Pointer64, "Blink");
     }
 
-    // ── Hex64 fields after headers ──
-    const int tailOff = shOff + 4 * 40;  // 0x228
-    addField(0, tailOff + 0,  NodeKind::Hex64, "RawData0");
-    addField(0, tailOff + 8,  NodeKind::Hex64, "RawData1");
-    addField(0, tailOff + 16, NodeKind::Hex64, "RawData2");
-    addField(0, tailOff + 24, NodeKind::Hex64, "RawData3");
+    // 0x3A0 – 0x79F
+    addArray(peb, 0x3A0, "WaitOnAddressHashTable", 128, NodeKind::UInt64);
+
+    // 0x7A0 – 0x7CF
+    addField(peb, 0x7A0, NodeKind::Pointer64, "TelemetryCoverageHeader");
+    addField(peb, 0x7A8, NodeKind::UInt32,    "CloudFileFlags");
+    addField(peb, 0x7AC, NodeKind::UInt32,    "CloudFileDiagFlags");
+    addField(peb, 0x7B0, NodeKind::Int8,      "PlaceholderCompatibilityMode");
+    addArray(peb, 0x7B1, "PlaceholderCompatibilityModeReserved", 7, NodeKind::Int8);
+    addField(peb, 0x7B8, NodeKind::Pointer64, "LeapSecondData");
+    addField(peb, 0x7C0, NodeKind::UInt32,    "LeapSecondFlags");
+    addField(peb, 0x7C4, NodeKind::UInt32,    "NtGlobalFlag2");
+    addField(peb, 0x7C8, NodeKind::UInt64,    "ExtendedFeatureDisableMask");
 
     createTab(doc);
 }
@@ -777,7 +729,7 @@ int main(int argc, char* argv[]) {
         window.setWindowOpacity(0.0);
     window.show();
 
-    // Always auto-open PE header demo on startup
+    // Always auto-open PEB64 demo on startup
     QMetaObject::invokeMethod(&window, "newFile");
 
     if (screenshotMode) {

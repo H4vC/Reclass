@@ -56,23 +56,12 @@ int computeFoldLevel(int depth, bool isHead) {
     return level;
 }
 
-uint32_t computeMarkers(const Node& node, const Provider& prov,
-                        uint64_t addr, bool isCont, int depth) {
+uint32_t computeMarkers(const Node& node, const Provider& /*prov*/,
+                        uint64_t /*addr*/, bool isCont, int /*depth*/) {
     uint32_t mask = 0;
     if (isCont)                          mask |= (1u << M_CONT);
     if (node.kind == NodeKind::Padding)  mask |= (1u << M_PAD);
-
-    if (prov.isValid()) {
-        int sz = node.byteSize();
-        if (sz > 0 && !prov.isReadable(addr, sz)) {
-            mask |= (1u << M_ERR);
-        } else if (sz > 0) {
-            if (node.kind == NodeKind::Pointer32 && prov.readU32(addr) == 0)
-                mask |= (1u << M_PTR0);
-            if (node.kind == NodeKind::Pointer64 && prov.readU64(addr) == 0)
-                mask |= (1u << M_PTR0);
-        }
-    }
+    // No ambient validation markers — errors only shown during inline editing.
     return mask;
 }
 

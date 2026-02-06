@@ -208,7 +208,27 @@ void RcxController::connectEditor(RcxEditor* editor) {
                 // Regular type change
                 bool ok;
                 NodeKind k = kindFromTypeName(text, &ok);
-                if (ok) changeNodeKind(nodeIdx, k);
+                if (ok) {
+                    changeNodeKind(nodeIdx, k);
+                } else if (nodeIdx < m_doc->tree.nodes.size()) {
+                    // Check if it's a defined struct type name
+                    bool isStructType = false;
+                    for (const auto& n : m_doc->tree.nodes) {
+                        if (n.kind == NodeKind::Struct && n.structTypeName == text) {
+                            isStructType = true;
+                            break;
+                        }
+                    }
+                    if (isStructType) {
+                        auto& node = m_doc->tree.nodes[nodeIdx];
+                        if (node.kind != NodeKind::Struct)
+                            changeNodeKind(nodeIdx, NodeKind::Struct);
+                        // Set the struct type name via rename of structTypeName
+                        int idx = m_doc->tree.indexOfId(node.id);
+                        if (idx >= 0)
+                            m_doc->tree.nodes[idx].structTypeName = text;
+                    }
+                }
             }
             break;
         }
@@ -309,7 +329,20 @@ void RcxController::refresh() {
     }
     m_selIds = valid;
 
+    // Collect unique struct type names for the type picker
+    QStringList customTypes;
+    QSet<QString> seen;
+    for (const auto& node : m_doc->tree.nodes) {
+        if (node.kind == NodeKind::Struct && !node.structTypeName.isEmpty()) {
+            if (!seen.contains(node.structTypeName)) {
+                seen.insert(node.structTypeName);
+                customTypes << node.structTypeName;
+            }
+        }
+    }
+
     for (auto* editor : m_editors) {
+        editor->setCustomTypeNames(customTypes);
         ViewState vs = editor->saveViewState();
         editor->applyDocument(m_lastResult);
         editor->restoreViewState(vs);

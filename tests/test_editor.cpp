@@ -10,105 +10,295 @@
 
 using namespace rcx;
 
-// Load first 0x6000 bytes of the test exe for realistic data
+// 0x7D0 bytes of PEB-like data with recognizable values at key offsets
 static BufferProvider makeTestProvider() {
-    QFile exe(QCoreApplication::applicationFilePath());
-    if (exe.open(QIODevice::ReadOnly)) {
-        QByteArray data = exe.read(0x6000);
-        exe.close();
-        if (data.size() >= 0x6000)
-            return BufferProvider(data);
-    }
-    // Fallback: minimal PE header stub
-    QByteArray data(0x6000, '\0');
-    data[0] = 'M'; data[1] = 'Z';  // DOS signature
-    return BufferProvider(data);
+    QByteArray data(0x7D0, '\0');
+
+    auto w8  = [&](int off, uint8_t  v) { data[off] = (char)v; };
+    auto w16 = [&](int off, uint16_t v) { memcpy(data.data()+off, &v, 2); };
+    auto w32 = [&](int off, uint32_t v) { memcpy(data.data()+off, &v, 4); };
+    auto w64 = [&](int off, uint64_t v) { memcpy(data.data()+off, &v, 8); };
+
+    w8 (0x002, 1);                              // BeingDebugged
+    w8 (0x003, 0x04);                           // BitField
+    w64(0x008, 0xFFFFFFFFFFFFFFFFULL);          // Mutant (-1)
+    w64(0x010, 0x00007FF6DE120000ULL);          // ImageBaseAddress
+    w64(0x018, 0x00007FFE3B8B53C0ULL);          // Ldr
+    w64(0x020, 0x000001A4C3E20F90ULL);          // ProcessParameters
+    w64(0x028, 0x0000000000000000ULL);          // SubSystemData
+    w64(0x030, 0x000001A4C3D40000ULL);          // ProcessHeap
+    w64(0x038, 0x00007FFE3B8D4260ULL);          // FastPebLock
+    w64(0x040, 0x0000000000000000ULL);          // AtlThunkSListPtr
+    w64(0x048, 0x0000000000000000ULL);          // IFEOKey
+    w32(0x050, 0x01);                           // CrossProcessFlags
+    w64(0x058, 0x00007FFE3B720000ULL);          // KernelCallbackTable
+    w32(0x060, 0);                              // SystemReserved
+    w32(0x064, 0);                              // AtlThunkSListPtr32
+    w64(0x068, 0x00007FFE3E570000ULL);          // ApiSetMap
+    w32(0x070, 0);                              // TlsExpansionCounter
+    w64(0x078, 0x00007FFE3B8D3F50ULL);          // TlsBitmap
+    w32(0x080, 0x00000003);                     // TlsBitmapBits[0]
+    w32(0x084, 0x00000000);                     // TlsBitmapBits[1]
+    w64(0x088, 0x00007FFE38800000ULL);          // ReadOnlySharedMemoryBase
+    w64(0x090, 0x00007FFE38820000ULL);          // SharedData
+    w64(0x098, 0x00007FFE388A0000ULL);          // ReadOnlyStaticServerData
+    w64(0x0A0, 0x00007FFE3B8D1000ULL);          // AnsiCodePageData
+    w64(0x0A8, 0x00007FFE3B8D2040ULL);          // OemCodePageData
+    w64(0x0B0, 0x00007FFE3B8CE020ULL);          // UnicodeCaseTableData
+    w32(0x0B8, 8);                              // NumberOfProcessors
+    w32(0x0BC, 0x70);                           // NtGlobalFlag
+    w64(0x0C0, 0xFFFFFFFF7C91E000ULL);          // CriticalSectionTimeout
+    w64(0x0C8, 0x0000000000100000ULL);          // HeapSegmentReserve
+    w64(0x0D0, 0x0000000000002000ULL);          // HeapSegmentCommit
+    w64(0x0D8, 0x0000000000040000ULL);          // HeapDeCommitTotalFreeThreshold
+    w64(0x0E0, 0x0000000000001000ULL);          // HeapDeCommitFreeBlockThreshold
+    w32(0x0E8, 4);                              // NumberOfHeaps
+    w32(0x0EC, 16);                             // MaximumNumberOfHeaps
+    w64(0x0F0, 0x000001A4C3D40688ULL);          // ProcessHeaps
+    w64(0x0F8, 0x00007FFE388B0000ULL);          // GdiSharedHandleTable
+    w64(0x100, 0x0000000000000000ULL);          // ProcessStarterHelper
+    w32(0x108, 0);                              // GdiDCAttributeList
+    w64(0x110, 0x00007FFE3B8D42E8ULL);          // LoaderLock
+    w32(0x118, 10);                             // OSMajorVersion
+    w32(0x11C, 0);                              // OSMinorVersion
+    w16(0x120, 19045);                          // OSBuildNumber
+    w16(0x122, 0);                              // OSCSDVersion
+    w32(0x124, 2);                              // OSPlatformId
+    w32(0x128, 3);                              // ImageSubsystem (CUI)
+    w32(0x12C, 10);                             // ImageSubsystemMajorVersion
+    w32(0x130, 0);                              // ImageSubsystemMinorVersion
+    w64(0x138, 0x00000000000000FFULL);          // ActiveProcessAffinityMask
+    w64(0x230, 0x0000000000000000ULL);          // PostProcessInitRoutine
+    w64(0x238, 0x00007FFE3B8D3F70ULL);          // TlsExpansionBitmap
+    w32(0x2C0, 1);                              // SessionId
+    w64(0x2C8, 0x0000000000000000ULL);          // AppCompatFlags
+    w64(0x2D0, 0x0000000000000000ULL);          // AppCompatFlagsUser
+    w64(0x2D8, 0x0000000000000000ULL);          // pShimData
+    w64(0x2E0, 0x0000000000000000ULL);          // AppCompatInfo
+    w16(0x2E8, 0);                              // CSDVersion.Length
+    w16(0x2EA, 0);                              // CSDVersion.MaximumLength
+    w64(0x2F0, 0x0000000000000000ULL);          // CSDVersion.Buffer
+    w64(0x2F8, 0x000001A4C3E21000ULL);          // ActivationContextData
+    w64(0x300, 0x000001A4C3E22000ULL);          // ProcessAssemblyStorageMap
+    w64(0x308, 0x00007FFE38840000ULL);          // SystemDefaultActivationContextData
+    w64(0x310, 0x00007FFE38850000ULL);          // SystemAssemblyStorageMap
+    w64(0x318, 0x0000000000002000ULL);          // MinimumStackCommit
+    w64(0x330, 0x0000000000000000ULL);          // PatchLoaderData
+    w64(0x338, 0x0000000000000000ULL);          // ChpeV2ProcessInfo
+    w32(0x340, 0);                              // AppModelFeatureState
+    w16(0x34C, 1252);                           // ActiveCodePage
+    w16(0x34E, 437);                            // OemCodePage
+    w16(0x350, 0);                              // UseCaseMapping
+    w16(0x352, 0);                              // UnusedNlsField
+    w64(0x358, 0x000001A4C3E30000ULL);          // WerRegistrationData
+    w64(0x360, 0x0000000000000000ULL);          // WerShipAssertPtr
+    w64(0x368, 0x0000000000000000ULL);          // EcCodeBitMap
+    w64(0x370, 0x0000000000000000ULL);          // pImageHeaderHash
+    w32(0x378, 0);                              // TracingFlags
+    w64(0x380, 0x00007FFE38890000ULL);          // CsrServerReadOnlySharedMemoryBase
+    w64(0x388, 0x0000000000000000ULL);          // TppWorkerpListLock
+    w64(0x390, 0x000000D87B5E5390ULL);          // TppWorkerpList.Flink (self)
+    w64(0x398, 0x000000D87B5E5390ULL);          // TppWorkerpList.Blink (self)
+    w64(0x7A0, 0x0000000000000000ULL);          // TelemetryCoverageHeader
+    w32(0x7A8, 0);                              // CloudFileFlags
+    w32(0x7AC, 0);                              // CloudFileDiagFlags
+    w8 (0x7B0, 0);                              // PlaceholderCompatibilityMode
+    w64(0x7B8, 0x00007FFE38860000ULL);          // LeapSecondData
+    w32(0x7C0, 0);                              // LeapSecondFlags
+    w32(0x7C4, 0);                              // NtGlobalFlag2
+    w64(0x7C8, 0x0000000000000000ULL);          // ExtendedFeatureDisableMask
+
+    return BufferProvider(data, "peb_snapshot.bin");
 }
 
-// Build a PE-like test tree with IMAGE_FILE_HEADER fields
+// Build the full _PEB64 tree (0x7D0 bytes), unions mapped to first member
 static NodeTree makeTestTree() {
     NodeTree tree;
-    tree.baseAddress = 0x140000000;
+    tree.baseAddress = 0x000000D87B5E5000ULL;
 
-    // Root struct: IMAGE_FILE_HEADER
+    // Root struct
     Node root;
     root.kind = NodeKind::Struct;
-    root.structTypeName = "IMAGE_FILE_HEADER";
-    root.name = "FileHeader";
+    root.structTypeName = "_PEB64";
+    root.name = "Peb";
     root.parentId = 0;
     root.offset = 0;
     int ri = tree.addNode(root);
     uint64_t rootId = tree.nodes[ri].id;
 
-    int offset = 0;
+    // Helpers
+    auto field = [&](int off, NodeKind k, const char* name) {
+        Node n; n.kind = k; n.name = name;
+        n.parentId = rootId; n.offset = off;
+        tree.addNode(n);
+    };
+    auto pad = [&](int off, int len, const char* name) {
+        Node n; n.kind = NodeKind::Padding; n.name = name;
+        n.parentId = rootId; n.offset = off; n.arrayLen = len;
+        tree.addNode(n);
+    };
+    auto arr = [&](int off, NodeKind ek, int len, const char* name) {
+        Node n; n.kind = NodeKind::Array; n.name = name;
+        n.parentId = rootId; n.offset = off;
+        n.arrayLen = len; n.elementKind = ek;
+        tree.addNode(n);
+    };
+    auto sub = [&](int off, const char* ty, const char* name) -> uint64_t {
+        Node n; n.kind = NodeKind::Struct; n.structTypeName = ty; n.name = name;
+        n.parentId = rootId; n.offset = off;
+        int idx = tree.addNode(n); return tree.nodes[idx].id;
+    };
 
-    // IMAGE_FILE_HEADER fields (matches Windows PE format)
-    Node machine;
-    machine.kind = NodeKind::UInt16;
-    machine.name = "Machine";
-    machine.parentId = rootId;
-    machine.offset = offset;
-    tree.addNode(machine);
-    offset += 2;
+    // ── 0x000 – 0x007 ──
+    field(0x000, NodeKind::UInt8,     "InheritedAddressSpace");
+    field(0x001, NodeKind::UInt8,     "ReadImageFileExecOptions");
+    field(0x002, NodeKind::UInt8,     "BeingDebugged");
+    field(0x003, NodeKind::UInt8,     "BitField");              // union → first member
+    pad  (0x004, 4,                   "Padding0");
 
-    Node numSections;
-    numSections.kind = NodeKind::UInt16;
-    numSections.name = "NumberOfSections";
-    numSections.parentId = rootId;
-    numSections.offset = offset;
-    tree.addNode(numSections);
-    offset += 2;
+    // ── 0x008 – 0x04F ──
+    field(0x008, NodeKind::Pointer64, "Mutant");
+    field(0x010, NodeKind::Pointer64, "ImageBaseAddress");
+    field(0x018, NodeKind::Pointer64, "Ldr");
+    field(0x020, NodeKind::Pointer64, "ProcessParameters");
+    field(0x028, NodeKind::Pointer64, "SubSystemData");
+    field(0x030, NodeKind::Pointer64, "ProcessHeap");
+    field(0x038, NodeKind::Pointer64, "FastPebLock");
+    field(0x040, NodeKind::Pointer64, "AtlThunkSListPtr");
+    field(0x048, NodeKind::Pointer64, "IFEOKey");
 
-    Node timestamp;
-    timestamp.kind = NodeKind::Hex32;
-    timestamp.name = "TimeDateStamp";
-    timestamp.parentId = rootId;
-    timestamp.offset = offset;
-    tree.addNode(timestamp);
-    offset += 4;
+    // ── 0x050 – 0x07F ──
+    field(0x050, NodeKind::UInt32,    "CrossProcessFlags");     // union → first member
+    pad  (0x054, 4,                   "Padding1");
+    field(0x058, NodeKind::Pointer64, "KernelCallbackTable");   // union → first member
+    field(0x060, NodeKind::UInt32,    "SystemReserved");
+    field(0x064, NodeKind::UInt32,    "AtlThunkSListPtr32");
+    field(0x068, NodeKind::Pointer64, "ApiSetMap");
+    field(0x070, NodeKind::UInt32,    "TlsExpansionCounter");
+    pad  (0x074, 4,                   "Padding2");
+    field(0x078, NodeKind::Pointer64, "TlsBitmap");
+    arr  (0x080, NodeKind::UInt32, 2, "TlsBitmapBits");
 
-    Node ptrSymbols;
-    ptrSymbols.kind = NodeKind::Hex32;
-    ptrSymbols.name = "PointerToSymbolTable";
-    ptrSymbols.parentId = rootId;
-    ptrSymbols.offset = offset;
-    tree.addNode(ptrSymbols);
-    offset += 4;
+    // ── 0x088 – 0x0BF ──
+    field(0x088, NodeKind::Pointer64, "ReadOnlySharedMemoryBase");
+    field(0x090, NodeKind::Pointer64, "SharedData");
+    field(0x098, NodeKind::Pointer64, "ReadOnlyStaticServerData");
+    field(0x0A0, NodeKind::Pointer64, "AnsiCodePageData");
+    field(0x0A8, NodeKind::Pointer64, "OemCodePageData");
+    field(0x0B0, NodeKind::Pointer64, "UnicodeCaseTableData");
+    field(0x0B8, NodeKind::UInt32,    "NumberOfProcessors");
+    field(0x0BC, NodeKind::Hex32,     "NtGlobalFlag");
 
-    Node numSymbols;
-    numSymbols.kind = NodeKind::UInt32;
-    numSymbols.name = "NumberOfSymbols";
-    numSymbols.parentId = rootId;
-    numSymbols.offset = offset;
-    tree.addNode(numSymbols);
-    offset += 4;
+    // ── 0x0C0 – 0x0EF ──
+    field(0x0C0, NodeKind::UInt64,    "CriticalSectionTimeout"); // _LARGE_INTEGER union
+    field(0x0C8, NodeKind::UInt64,    "HeapSegmentReserve");
+    field(0x0D0, NodeKind::UInt64,    "HeapSegmentCommit");
+    field(0x0D8, NodeKind::UInt64,    "HeapDeCommitTotalFreeThreshold");
+    field(0x0E0, NodeKind::UInt64,    "HeapDeCommitFreeBlockThreshold");
+    field(0x0E8, NodeKind::UInt32,    "NumberOfHeaps");
+    field(0x0EC, NodeKind::UInt32,    "MaximumNumberOfHeaps");
 
-    Node optHeaderSize;
-    optHeaderSize.kind = NodeKind::UInt16;
-    optHeaderSize.name = "SizeOfOptionalHeader";
-    optHeaderSize.parentId = rootId;
-    optHeaderSize.offset = offset;
-    tree.addNode(optHeaderSize);
-    offset += 2;
+    // ── 0x0F0 – 0x13F ──
+    field(0x0F0, NodeKind::Pointer64, "ProcessHeaps");
+    field(0x0F8, NodeKind::Pointer64, "GdiSharedHandleTable");
+    field(0x100, NodeKind::Pointer64, "ProcessStarterHelper");
+    field(0x108, NodeKind::UInt32,    "GdiDCAttributeList");
+    pad  (0x10C, 4,                   "Padding3");
+    field(0x110, NodeKind::Pointer64, "LoaderLock");
+    field(0x118, NodeKind::UInt32,    "OSMajorVersion");
+    field(0x11C, NodeKind::UInt32,    "OSMinorVersion");
+    field(0x120, NodeKind::UInt16,    "OSBuildNumber");
+    field(0x122, NodeKind::UInt16,    "OSCSDVersion");
+    field(0x124, NodeKind::UInt32,    "OSPlatformId");
+    field(0x128, NodeKind::UInt32,    "ImageSubsystem");
+    field(0x12C, NodeKind::UInt32,    "ImageSubsystemMajorVersion");
+    field(0x130, NodeKind::UInt32,    "ImageSubsystemMinorVersion");
+    pad  (0x134, 4,                   "Padding4");
+    field(0x138, NodeKind::UInt64,    "ActiveProcessAffinityMask");
 
-    Node characteristics;
-    characteristics.kind = NodeKind::Hex16;
-    characteristics.name = "Characteristics";
-    characteristics.parentId = rootId;
-    characteristics.offset = offset;
-    tree.addNode(characteristics);
-    offset += 2;
+    // ── 0x140 – 0x22F ──
+    arr  (0x140, NodeKind::UInt32, 60, "GdiHandleBuffer");
 
-    // 8 Hex64 fields for additional test coverage
-    for (int i = 0; i < 8; i++) {
-        Node hex;
-        hex.kind = NodeKind::Hex64;
-        hex.name = QString("Reserved%1").arg(i);
-        hex.parentId = rootId;
-        hex.offset = offset;
-        tree.addNode(hex);
-        offset += 8;
+    // ── 0x230 – 0x2BF ──
+    field(0x230, NodeKind::Pointer64, "PostProcessInitRoutine");
+    field(0x238, NodeKind::Pointer64, "TlsExpansionBitmap");
+    arr  (0x240, NodeKind::UInt32, 32, "TlsExpansionBitmapBits");
+
+    // ── 0x2C0 – 0x2E7 ──
+    field(0x2C0, NodeKind::UInt32,    "SessionId");
+    pad  (0x2C4, 4,                   "Padding5");
+    field(0x2C8, NodeKind::UInt64,    "AppCompatFlags");         // _ULARGE_INTEGER union
+    field(0x2D0, NodeKind::UInt64,    "AppCompatFlagsUser");     // _ULARGE_INTEGER union
+    field(0x2D8, NodeKind::Pointer64, "pShimData");
+    field(0x2E0, NodeKind::Pointer64, "AppCompatInfo");
+
+    // ── 0x2E8 – 0x2F7: _STRING64 CSDVersion (nested struct) ──
+    {
+        uint64_t sid = sub(0x2E8, "_STRING64", "CSDVersion");
+        Node n;
+        n.parentId = sid;
+
+        n.kind = NodeKind::UInt16;  n.name = "Length";         n.offset = 0; tree.addNode(n);
+        n.kind = NodeKind::UInt16;  n.name = "MaximumLength";  n.offset = 2; tree.addNode(n);
+        n.kind = NodeKind::Padding; n.name = "Pad";
+        n.offset = 4; n.arrayLen = 4; tree.addNode(n);
+        n.kind = NodeKind::Pointer64; n.name = "Buffer"; n.offset = 8; n.arrayLen = 1;
+        tree.addNode(n);
     }
+
+    // ── 0x2F8 – 0x31F ──
+    field(0x2F8, NodeKind::Pointer64, "ActivationContextData");
+    field(0x300, NodeKind::Pointer64, "ProcessAssemblyStorageMap");
+    field(0x308, NodeKind::Pointer64, "SystemDefaultActivationContextData");
+    field(0x310, NodeKind::Pointer64, "SystemAssemblyStorageMap");
+    field(0x318, NodeKind::UInt64,    "MinimumStackCommit");
+
+    // ── 0x320 – 0x34B ──
+    arr  (0x320, NodeKind::UInt64, 2, "SparePointers");
+    field(0x330, NodeKind::Pointer64, "PatchLoaderData");
+    field(0x338, NodeKind::Pointer64, "ChpeV2ProcessInfo");
+    field(0x340, NodeKind::UInt32,    "AppModelFeatureState");
+    arr  (0x344, NodeKind::UInt32, 2, "SpareUlongs");
+    field(0x34C, NodeKind::UInt16,    "ActiveCodePage");
+    field(0x34E, NodeKind::UInt16,    "OemCodePage");
+    field(0x350, NodeKind::UInt16,    "UseCaseMapping");
+    field(0x352, NodeKind::UInt16,    "UnusedNlsField");
+
+    // ── 0x354 – 0x37F (implicit padding + fields) ──
+    pad  (0x354, 4,                   "Pad354");
+    field(0x358, NodeKind::Pointer64, "WerRegistrationData");
+    field(0x360, NodeKind::Pointer64, "WerShipAssertPtr");
+    field(0x368, NodeKind::Pointer64, "EcCodeBitMap");
+    field(0x370, NodeKind::Pointer64, "pImageHeaderHash");
+    field(0x378, NodeKind::UInt32,    "TracingFlags");           // union → first member
+    pad  (0x37C, 4,                   "Padding6");
+
+    // ── 0x380 – 0x39F ──
+    field(0x380, NodeKind::Pointer64, "CsrServerReadOnlySharedMemoryBase");
+    field(0x388, NodeKind::UInt64,    "TppWorkerpListLock");
+
+    // ── 0x390 – 0x39F: LIST_ENTRY64 TppWorkerpList (nested struct) ──
+    {
+        uint64_t sid = sub(0x390, "LIST_ENTRY64", "TppWorkerpList");
+        Node n;
+        n.parentId = sid;
+        n.kind = NodeKind::Pointer64; n.name = "Flink"; n.offset = 0; tree.addNode(n);
+        n.kind = NodeKind::Pointer64; n.name = "Blink"; n.offset = 8; tree.addNode(n);
+    }
+
+    // ── 0x3A0 – 0x79F ──
+    arr  (0x3A0, NodeKind::UInt64, 128, "WaitOnAddressHashTable");
+
+    // ── 0x7A0 – 0x7CF ──
+    field(0x7A0, NodeKind::Pointer64, "TelemetryCoverageHeader");
+    field(0x7A8, NodeKind::UInt32,    "CloudFileFlags");
+    field(0x7AC, NodeKind::UInt32,    "CloudFileDiagFlags");
+    field(0x7B0, NodeKind::Int8,      "PlaceholderCompatibilityMode");
+    arr  (0x7B1, NodeKind::Int8, 7,   "PlaceholderCompatibilityModeReserved");
+    field(0x7B8, NodeKind::Pointer64, "LeapSecondData");
+    field(0x7C0, NodeKind::UInt32,    "LeapSecondFlags");        // union → first member
+    field(0x7C4, NodeKind::UInt32,    "NtGlobalFlag2");
+    field(0x7C8, NodeKind::UInt64,    "ExtendedFeatureDisableMask");
 
     return tree;
 }
@@ -155,7 +345,7 @@ private slots:
 
         // Set CommandRow text with an ADDR value (simulates controller.updateCommandRow)
         m_editor->setCommandRowText(
-            QStringLiteral("   File Address: 0x140000000"));
+            QStringLiteral("   File Address: 0xD87B5E5000"));
 
         // BaseAddress should be ALLOWED on CommandRow (ADDR field)
         bool ok = m_editor->beginInlineEdit(EditTarget::BaseAddress, 0);
@@ -252,8 +442,6 @@ private slots:
         QCOMPARE(cancelSpy.count(), 0);
     }
 
-
-
     // ── Test: type edit begins and can be cancelled ──
     void testTypeEditCancel() {
         m_editor->applyDocument(m_result);
@@ -287,7 +475,7 @@ private slots:
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Header);
 
-        // Type edit on header should succeed (has typename IMAGE_FILE_HEADER)
+        // Type edit on header should succeed (has typename _PEB64)
         bool ok = m_editor->beginInlineEdit(EditTarget::Type, 1);
         QVERIFY(ok);
         QVERIFY(m_editor->isEditing());
@@ -319,7 +507,6 @@ private slots:
         QVERIFY(!m_editor->beginInlineEdit(EditTarget::Value, footerLine));
         QVERIFY(!m_editor->isEditing());
     }
-
 
     // ── Test: parseValue accepts space-separated hex bytes ──
     void testParseValueHexWithSpaces() {
@@ -417,10 +604,11 @@ private slots:
         QCOMPARE(commitSpy.count(), 1);
 
         // The committed text should be the original typeName (no change)
+        // First field at line 2 is InheritedAddressSpace (UInt8 → "uint8_t")
         QList<QVariant> args = commitSpy.first();
         QString committedText = args.at(3).toString();
-        QVERIFY2(committedText == "uint16_t",
-                 qPrintable("Expected 'uint16_t', got: " + committedText));
+        QVERIFY2(committedText == "uint8_t",
+                 qPrintable("Expected 'uint8_t', got: " + committedText));
 
         m_editor->applyDocument(m_result);
     }
@@ -429,7 +617,7 @@ private slots:
     void testColumnSpanHitTest() {
         m_editor->applyDocument(m_result);
 
-        // Line 2 is a field line (UInt16), verify spans are valid (line 0=CommandRow, 1=header)
+        // Line 2 is a field line (UInt8), verify spans are valid (line 0=CommandRow, 1=header)
         const LineMeta* lm = m_editor->metaForLine(2);
         QVERIFY(lm);
         QCOMPARE(lm->lineKind, LineKind::Field);
@@ -527,7 +715,7 @@ private slots:
 
         // Set CommandRow text with ADDR value (simulates controller)
         m_editor->setCommandRowText(
-            QStringLiteral("   File Address: 0x140000000"));
+            QStringLiteral("   File Address: 0xD87B5E5000"));
 
         // Line 0 is CommandRow
         const LineMeta* lm = m_editor->metaForLine(0);
@@ -566,7 +754,7 @@ private slots:
 
         // Set CommandRow text with ADDR value (simulates controller)
         m_editor->setCommandRowText(
-            QStringLiteral("   File Address: 0x140000000"));
+            QStringLiteral("   File Address: 0xD87B5E5000"));
 
         // Begin base address edit on line 0 (CommandRow ADDR field)
         bool ok = m_editor->beginInlineEdit(EditTarget::BaseAddress, 0);

@@ -1341,8 +1341,15 @@ void RcxEditor::showTypeListFiltered(const QString& filter) {
     if (!m_editState.active || m_editState.target != EditTarget::Type)
         return;
 
-    // Filter type names by prefix
+    // Combine native types with custom (struct) type names
     QStringList all = allTypeNamesForUI();
+    for (const QString& ct : m_customTypeNames) {
+        if (!all.contains(ct))
+            all << ct;
+    }
+    all.sort(Qt::CaseInsensitive);
+
+    // Filter by prefix
     QStringList filtered;
     for (const QString& t : all) {
         if (filter.isEmpty() || t.startsWith(filter, Qt::CaseInsensitive))

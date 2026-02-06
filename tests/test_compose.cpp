@@ -150,7 +150,8 @@ private slots:
         ComposeResult result = compose(tree, prov);
 
         QCOMPARE(result.meta.size(), 4);
-        QVERIFY(result.meta[2].markerMask & (1u << M_PTR0));
+        // No ambient validation markers — M_PTR0 is no longer set
+        QVERIFY(!(result.meta[2].markerMask & (1u << M_PTR0)));
     }
 
     void testCollapsedStruct() {
@@ -182,7 +183,7 @@ private slots:
     }
 
     void testUnreadablePointerNoRead() {
-        // A pointer at an unreadable address should get M_ERR, not M_PTR0
+        // No ambient validation — neither M_ERR nor M_PTR0 set
         NodeTree tree;
         tree.baseAddress = 0;
 
@@ -206,8 +207,8 @@ private slots:
         ComposeResult result = compose(tree, prov);
 
         QCOMPARE(result.meta.size(), 4);
-        // Should have M_ERR, should NOT have M_PTR0
-        QVERIFY(result.meta[2].markerMask & (1u << M_ERR));
+        // No ambient validation markers
+        QVERIFY(!(result.meta[2].markerMask & (1u << M_ERR)));
         QVERIFY(!(result.meta[2].markerMask & (1u << M_PTR0)));
     }
 
