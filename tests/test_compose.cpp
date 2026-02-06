@@ -395,10 +395,10 @@ private slots:
 
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + Main: header + magic + ptr(fold head) + VTable header + fn1 + fn2 + VTable footer + Main footer = 9
+        // CommandRow + Main: header + magic + ptr(merged fold header) + fn1 + fn2 + ptr footer + Main footer = 8
         // VTable standalone: header + fn1 + fn2 + footer = 4
-        // Total = 13
-        QCOMPARE(result.meta.size(), 13);
+        // Total = 12
+        QCOMPARE(result.meta.size(), 12);
 
         // Main header
         QCOMPARE(result.meta[1].lineKind, LineKind::Header);
@@ -408,27 +408,23 @@ private slots:
         QCOMPARE(result.meta[2].lineKind, LineKind::Field);
         QCOMPARE(result.meta[2].depth, 1);
 
-        // Pointer as fold head
-        QCOMPARE(result.meta[3].lineKind, LineKind::Field);
+        // Pointer as merged fold header: "ptr64<VTable> ptr {"
+        QCOMPARE(result.meta[3].lineKind, LineKind::Header);
         QCOMPARE(result.meta[3].depth, 1);
         QVERIFY(result.meta[3].foldHead);
         QCOMPARE(result.meta[3].nodeKind, NodeKind::Pointer64);
 
-        // Expanded VTable header at depth 2
-        QCOMPARE(result.meta[4].lineKind, LineKind::Header);
+        // Expanded fields at depth 2 (struct header merged into pointer)
         QCOMPARE(result.meta[4].depth, 2);
+        QCOMPARE(result.meta[5].depth, 2);
 
-        // Expanded fields at depth 3
-        QCOMPARE(result.meta[5].depth, 3);
-        QCOMPARE(result.meta[6].depth, 3);
-
-        // Expanded VTable footer
-        QCOMPARE(result.meta[7].lineKind, LineKind::Footer);
-        QCOMPARE(result.meta[7].depth, 2);
+        // Pointer fold footer
+        QCOMPARE(result.meta[6].lineKind, LineKind::Footer);
+        QCOMPARE(result.meta[6].depth, 1);
 
         // Main footer
-        QCOMPARE(result.meta[8].lineKind, LineKind::Footer);
-        QCOMPARE(result.meta[8].depth, 0);
+        QCOMPARE(result.meta[7].lineKind, LineKind::Footer);
+        QCOMPARE(result.meta[7].depth, 0);
     }
 
     void testPointerDerefNull() {
@@ -472,18 +468,21 @@ private slots:
 
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + Main: header + ptr(fold head, no expansion) + footer = 4
+        // CommandRow + Main: header + ptr(merged fold header) + ptr footer + Main footer = 5
         // Target standalone: header + field + footer = 3
-        // Total = 7
-        QCOMPARE(result.meta.size(), 7);
+        // Total = 8
+        QCOMPARE(result.meta.size(), 8);
 
-        // Pointer is fold head but has no children (null ptr)
-        QCOMPARE(result.meta[2].lineKind, LineKind::Field);
+        // Pointer as merged fold header (expanded but empty — null ptr)
+        QCOMPARE(result.meta[2].lineKind, LineKind::Header);
         QVERIFY(result.meta[2].foldHead);
 
-        // Next line is Main footer (no expansion)
+        // Pointer fold footer (empty expansion)
         QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
-        QCOMPARE(result.meta[3].depth, 0);
+
+        // Main footer
+        QCOMPARE(result.meta[4].lineKind, LineKind::Footer);
+        QCOMPARE(result.meta[4].depth, 0);
     }
 
     void testPointerDerefCollapsed() {
@@ -603,14 +602,15 @@ private slots:
         QVERIFY(result.meta.size() > 0);
         QVERIFY(result.meta.size() < 100); // sanity: bounded output
 
-        // First expansion happens: CommandRow + Main header + ptr fold head + Recursive header + data + backPtr fold head
-        // Second expansion blocked by cycle guard: no children under backPtr
-        // Then: Recursive footer + Main footer
+        // First expansion: CommandRow + Main header + ptr merged header + data + self merged header
+        // Second expansion blocked by cycle guard: no children under self
+        // Then: self footer + ptr footer + Main footer
         // Plus standalone Recursive rendering
         // The exact count depends on cycle guard behavior but must be finite
         QCOMPARE(result.meta[1].lineKind, LineKind::Header); // Main header
-        QVERIFY(result.meta[2].foldHead);                     // ptr fold head
-        QCOMPARE(result.meta[3].lineKind, LineKind::Header); // Recursive header (expansion)
+        QVERIFY(result.meta[2].foldHead);                     // ptr merged fold head
+        QCOMPARE(result.meta[2].lineKind, LineKind::Header); // ptr merged header
+        QCOMPARE(result.meta[3].lineKind, LineKind::Field);  // data field (first child of Recursive)
     }
 
     void testStructFooterSimple() {
@@ -671,6 +671,1101 @@ private slots:
             int ni = result.meta[i].nodeIdx;
             QVERIFY(ni >= 0 && ni < tree.nodes.size());
             QCOMPARE(result.meta[i].nodeId, tree.nodes[ni].id);
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // Array tests
+    // ═════════════════════════════════════════════════════════════
+
+    void testArrayHeaderFormat() {
+        // Array header must show "elemType[count]" text and proper metadata
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "data";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::Int32;
+        arr.arrayLen = 10;
+        tree.addNode(arr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Find the array header line
+        int headerLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].isArrayHeader) {
+                headerLine = i;
+                break;
+            }
+        }
+        QVERIFY(headerLine >= 0);
+
+        // Metadata must be correct
+        const LineMeta& lm = result.meta[headerLine];
+        QCOMPARE(lm.lineKind, LineKind::Header);
+        QVERIFY(lm.isArrayHeader);
+        QCOMPARE(lm.elementKind, NodeKind::Int32);
+        QCOMPARE(lm.arrayCount, 10);
+        QVERIFY(lm.foldHead);
+        QVERIFY(!lm.foldCollapsed);
+
+        // Text must contain "int32_t[10]" and the name
+        QStringList lines = result.text.split('\n');
+        QVERIFY(headerLine < lines.size());
+        QString text = lines[headerLine];
+        QVERIFY2(text.contains("int32_t[10]"),
+                 qPrintable("Header should contain 'int32_t[10]': " + text));
+        QVERIFY2(text.contains("data"),
+                 qPrintable("Header should contain 'data': " + text));
+        QVERIFY2(text.contains("{"),
+                 qPrintable("Expanded header should contain '{': " + text));
+    }
+
+    void testArrayHeaderCharTypes() {
+        // UInt8 array → "char[N]", UInt16 → "wchar_t[N]"
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr1;
+        arr1.kind = NodeKind::Array;
+        arr1.name = "str";
+        arr1.parentId = rootId;
+        arr1.offset = 0;
+        arr1.elementKind = NodeKind::UInt8;
+        arr1.arrayLen = 64;
+        tree.addNode(arr1);
+
+        Node arr2;
+        arr2.kind = NodeKind::Array;
+        arr2.name = "wstr";
+        arr2.parentId = rootId;
+        arr2.offset = 64;
+        arr2.elementKind = NodeKind::UInt16;
+        arr2.arrayLen = 32;
+        tree.addNode(arr2);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        QStringList lines = result.text.split('\n');
+        bool foundChar = false, foundWchar = false;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (!result.meta[i].isArrayHeader) continue;
+            QString text = lines[i];
+            if (text.contains("char[64]")) foundChar = true;
+            if (text.contains("wchar_t[32]")) foundWchar = true;
+        }
+        QVERIFY2(foundChar, "Should have 'char[64]' header");
+        QVERIFY2(foundWchar, "Should have 'wchar_t[32]' header");
+    }
+
+    void testArraySpansClickable() {
+        // Element type and count spans must cover the correct text regions
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "numbers";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::UInt32;
+        arr.arrayLen = 5;
+        tree.addNode(arr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        int headerLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].isArrayHeader) { headerLine = i; break; }
+        }
+        QVERIFY(headerLine >= 0);
+
+        QStringList lines = result.text.split('\n');
+        QString lineText = lines[headerLine];
+        const LineMeta& lm = result.meta[headerLine];
+
+        // Element type span must be valid and cover "uint32_t"
+        ColumnSpan typeSpan = arrayElemTypeSpanFor(lm, lineText);
+        QVERIFY2(typeSpan.valid, "arrayElemTypeSpanFor must return a valid span");
+        QVERIFY(typeSpan.start < typeSpan.end);
+        QString typeText = lineText.mid(typeSpan.start, typeSpan.end - typeSpan.start);
+        QVERIFY2(typeText.contains("uint32_t"),
+                 qPrintable("Type span should cover 'uint32_t', got: '" + typeText + "'"));
+
+        // Element count span must be valid and cover "5"
+        ColumnSpan countSpan = arrayElemCountSpanFor(lm, lineText);
+        QVERIFY2(countSpan.valid, "arrayElemCountSpanFor must return a valid span");
+        QVERIFY(countSpan.start < countSpan.end);
+        QString countText = lineText.mid(countSpan.start, countSpan.end - countSpan.start);
+        QCOMPARE(countText, QString("5"));
+    }
+
+    void testArrayWithStructChildren() {
+        // Array with struct children renders separators and child fields
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Array container
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "items";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::Int32;
+        arr.arrayLen = 2;
+        int ai = tree.addNode(arr);
+        uint64_t arrId = tree.nodes[ai].id;
+
+        // Two struct children inside the array (representing elements)
+        Node elem0;
+        elem0.kind = NodeKind::Struct;
+        elem0.name = "Item";
+        elem0.parentId = arrId;
+        elem0.offset = 0;
+        int e0i = tree.addNode(elem0);
+        uint64_t elem0Id = tree.nodes[e0i].id;
+
+        Node f0;
+        f0.kind = NodeKind::UInt32;
+        f0.name = "value";
+        f0.parentId = elem0Id;
+        f0.offset = 0;
+        tree.addNode(f0);
+
+        Node elem1;
+        elem1.kind = NodeKind::Struct;
+        elem1.name = "Item";
+        elem1.parentId = arrId;
+        elem1.offset = 4;
+        int e1i = tree.addNode(elem1);
+        uint64_t elem1Id = tree.nodes[e1i].id;
+
+        Node f1;
+        f1.kind = NodeKind::UInt32;
+        f1.name = "value";
+        f1.parentId = elem1Id;
+        f1.offset = 0;
+        tree.addNode(f1);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Must have content between header and footer (not empty!)
+        QVERIFY2(result.meta.size() > 4,
+                 qPrintable(QString("Array should have content, got %1 lines")
+                            .arg(result.meta.size())));
+
+        // Check for [0] and [1] separators
+        bool found0 = false, found1 = false;
+        int fieldCount = 0;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::ArrayElementSeparator) {
+                if (result.meta[i].arrayElementIdx == 0) found0 = true;
+                if (result.meta[i].arrayElementIdx == 1) found1 = true;
+            }
+            // Count fields belonging to array children
+            if (result.meta[i].lineKind == LineKind::Field &&
+                result.meta[i].depth >= 2)
+                fieldCount++;
+        }
+        QVERIFY2(found0, "Array should have [0] separator");
+        QVERIFY2(found1, "Array should have [1] separator");
+        QVERIFY2(fieldCount >= 2, "Array children should have field lines");
+    }
+
+    void testArrayCollapsedNoChildren() {
+        // Collapsed array: header only, no children or footer
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "data";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::Float;
+        arr.arrayLen = 100;
+        arr.collapsed = true;
+        int ai = tree.addNode(arr);
+        uint64_t arrId = tree.nodes[ai].id;
+
+        // Child that should NOT appear when collapsed
+        Node child;
+        child.kind = NodeKind::Float;
+        child.name = "elem";
+        child.parentId = arrId;
+        child.offset = 0;
+        tree.addNode(child);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // CommandRow + Root header + Array header(collapsed) + Root footer = 4
+        QCOMPARE(result.meta.size(), 4);
+
+        // Array header is collapsed
+        int arrLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].isArrayHeader) { arrLine = i; break; }
+        }
+        QVERIFY(arrLine >= 0);
+        QVERIFY(result.meta[arrLine].foldCollapsed);
+
+        // Header text should NOT contain "{"
+        QStringList lines = result.text.split('\n');
+        QVERIFY2(!lines[arrLine].contains("{"),
+                 qPrintable("Collapsed header should not have '{': " + lines[arrLine]));
+    }
+
+    void testArrayCountRecompose() {
+        // After changing arrayLen and recomposing, the text shows the new count
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "buf";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.elementKind = NodeKind::UInt8;
+        arr.arrayLen = 10;
+        int ai = tree.addNode(arr);
+
+        NullProvider prov;
+
+        // First compose: should show [10]
+        ComposeResult r1 = compose(tree, prov);
+        QStringList lines1 = r1.text.split('\n');
+        bool found10 = false;
+        for (const QString& l : lines1) {
+            if (l.contains("[10]")) { found10 = true; break; }
+        }
+        QVERIFY2(found10, "First compose should show [10]");
+
+        // Change count and recompose
+        tree.nodes[ai].arrayLen = 42;
+        ComposeResult r2 = compose(tree, prov);
+        QStringList lines2 = r2.text.split('\n');
+        bool found42 = false;
+        bool still10 = false;
+        for (const QString& l : lines2) {
+            if (l.contains("[42]")) found42 = true;
+            if (l.contains("[10]")) still10 = true;
+        }
+        QVERIFY2(found42, "Recomposed text should show [42]");
+        QVERIFY2(!still10, "Recomposed text should NOT still show [10]");
+
+        // Spans must still work after recompose
+        int headerLine = -1;
+        for (int i = 0; i < r2.meta.size(); i++) {
+            if (r2.meta[i].isArrayHeader) { headerLine = i; break; }
+        }
+        QVERIFY(headerLine >= 0);
+        ColumnSpan countSpan = arrayElemCountSpanFor(r2.meta[headerLine], lines2[headerLine]);
+        QVERIFY2(countSpan.valid, "Count span must be valid after recompose");
+        QString countText = lines2[headerLine].mid(countSpan.start, countSpan.end - countSpan.start);
+        QCOMPARE(countText, QString("42"));
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // Pointer tests
+    // ═════════════════════════════════════════════════════════════
+
+    void testPointerDefaultVoid() {
+        // Pointer64 with no refId should display as "ptr64<void>"
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "ptr";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        // refId defaults to 0 (void*)
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Find the pointer line
+        int ptrLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].nodeKind == NodeKind::Pointer64 &&
+                result.meta[i].lineKind == LineKind::Field) {
+                ptrLine = i;
+                break;
+            }
+        }
+        QVERIFY(ptrLine >= 0);
+
+        QStringList lines = result.text.split('\n');
+        QString text = lines[ptrLine];
+        QVERIFY2(text.contains("ptr64<void>"),
+                 qPrintable("Pointer with no refId should show 'ptr64<void>': " + text));
+
+        // pointerTargetName should be empty (void)
+        QVERIFY(result.meta[ptrLine].pointerTargetName.isEmpty());
+
+        // Should NOT be a fold head (no deref expansion for void*)
+        QVERIFY(!result.meta[ptrLine].foldHead);
+    }
+
+    void testPointer32DefaultVoid() {
+        // Same for Pointer32
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer32;
+        ptr.name = "ptr32";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        QStringList lines = result.text.split('\n');
+        bool foundPtr32 = false;
+        for (const QString& l : lines) {
+            if (l.contains("ptr32<void>")) { foundPtr32 = true; break; }
+        }
+        QVERIFY2(foundPtr32, "Pointer32 with no refId should show 'ptr32<void>'");
+    }
+
+    void testPointerDisplaysTargetName() {
+        // Pointer64 with refId displays "ptr64<TargetName>"
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Target struct with a structTypeName
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.name = "PlayerData";
+        target.structTypeName = "PlayerData";
+        target.parentId = 0;
+        target.offset = 200;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        Node tf;
+        tf.kind = NodeKind::UInt32;
+        tf.name = "health";
+        tf.parentId = targetId;
+        tf.offset = 0;
+        tree.addNode(tf);
+
+        // Pointer referencing the target (collapsed to prevent expansion)
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "player";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = true;
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Find the pointer line
+        int ptrLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].nodeKind == NodeKind::Pointer64 &&
+                result.meta[i].lineKind == LineKind::Field &&
+                result.meta[i].depth > 0) {
+                ptrLine = i;
+                break;
+            }
+        }
+        QVERIFY(ptrLine >= 0);
+
+        QStringList lines = result.text.split('\n');
+        QVERIFY2(lines[ptrLine].contains("ptr64<PlayerData>"),
+                 qPrintable("Should show 'ptr64<PlayerData>': " + lines[ptrLine]));
+
+        // pointerTargetName metadata
+        QCOMPARE(result.meta[ptrLine].pointerTargetName, QString("PlayerData"));
+
+        // Pointer with refId is a fold head (even if collapsed)
+        QVERIFY(result.meta[ptrLine].foldHead);
+        QVERIFY(result.meta[ptrLine].foldCollapsed);
+    }
+
+    void testPointerTargetUsesNameWhenNoTypeName() {
+        // If target struct has no structTypeName, use its name field
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.name = "MyStruct";
+        // structTypeName left empty
+        target.parentId = 0;
+        target.offset = 200;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "sptr";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = true;
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        QStringList lines = result.text.split('\n');
+        bool found = false;
+        for (const QString& l : lines) {
+            if (l.contains("ptr64<MyStruct>")) { found = true; break; }
+        }
+        QVERIFY2(found, "Should use struct name when structTypeName is empty");
+    }
+
+    void testPointerSpans() {
+        // pointerKindSpanFor and pointerTargetSpanFor must find correct regions
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.name = "VTable";
+        target.structTypeName = "VTable";
+        target.parentId = 0;
+        target.offset = 200;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "vtbl";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = true;
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        int ptrLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].nodeKind == NodeKind::Pointer64 &&
+                result.meta[i].lineKind == LineKind::Field &&
+                result.meta[i].depth > 0) {
+                ptrLine = i;
+                break;
+            }
+        }
+        QVERIFY(ptrLine >= 0);
+
+        QStringList lines = result.text.split('\n');
+        QString lineText = lines[ptrLine];
+        const LineMeta& lm = result.meta[ptrLine];
+
+        // Kind span: covers "ptr64"
+        ColumnSpan kindSpan = pointerKindSpanFor(lm, lineText);
+        QVERIFY2(kindSpan.valid, "pointerKindSpanFor must return valid span");
+        QString kindText = lineText.mid(kindSpan.start, kindSpan.end - kindSpan.start);
+        QVERIFY2(kindText.contains("ptr64"),
+                 qPrintable("Kind span should cover 'ptr64', got: '" + kindText + "'"));
+
+        // Target span: covers "VTable"
+        ColumnSpan targetSpan = pointerTargetSpanFor(lm, lineText);
+        QVERIFY2(targetSpan.valid, "pointerTargetSpanFor must return valid span");
+        QString targetText = lineText.mid(targetSpan.start, targetSpan.end - targetSpan.start);
+        QCOMPARE(targetText, QString("VTable"));
+    }
+
+    void testPointerVoidSpans() {
+        // Even void* pointer should have valid kind and target spans
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "vptr";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        int ptrLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].nodeKind == NodeKind::Pointer64 &&
+                result.meta[i].lineKind == LineKind::Field) {
+                ptrLine = i;
+                break;
+            }
+        }
+        QVERIFY(ptrLine >= 0);
+
+        QStringList lines = result.text.split('\n');
+        QString lineText = lines[ptrLine];
+        const LineMeta& lm = result.meta[ptrLine];
+
+        // Kind span: "ptr64"
+        ColumnSpan kindSpan = pointerKindSpanFor(lm, lineText);
+        QVERIFY2(kindSpan.valid, "void* pointer should have valid kind span");
+
+        // Target span: "void"
+        ColumnSpan targetSpan = pointerTargetSpanFor(lm, lineText);
+        QVERIFY2(targetSpan.valid, "void* pointer should have valid target span");
+        QString targetText = lineText.mid(targetSpan.start, targetSpan.end - targetSpan.start);
+        QCOMPARE(targetText, QString("void"));
+    }
+
+    void testPointerToPointerChain() {
+        // ptr64<StructB> → StructB { ptr64<StructC> } → StructC { field }
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // StructC (innermost target)
+        Node structC;
+        structC.kind = NodeKind::Struct;
+        structC.name = "InnerData";
+        structC.structTypeName = "InnerData";
+        structC.parentId = 0;
+        structC.offset = 300;
+        int ci = tree.addNode(structC);
+        uint64_t structCId = tree.nodes[ci].id;
+
+        Node cf;
+        cf.kind = NodeKind::UInt64;
+        cf.name = "payload";
+        cf.parentId = structCId;
+        cf.offset = 0;
+        tree.addNode(cf);
+
+        // StructB (middle target, contains ptr to C)
+        Node structB;
+        structB.kind = NodeKind::Struct;
+        structB.name = "Wrapper";
+        structB.structTypeName = "Wrapper";
+        structB.parentId = 0;
+        structB.offset = 200;
+        int bi = tree.addNode(structB);
+        uint64_t structBId = tree.nodes[bi].id;
+
+        Node bf;
+        bf.kind = NodeKind::UInt32;
+        bf.name = "flags";
+        bf.parentId = structBId;
+        bf.offset = 0;
+        tree.addNode(bf);
+
+        Node bptr;
+        bptr.kind = NodeKind::Pointer64;
+        bptr.name = "inner";
+        bptr.parentId = structBId;
+        bptr.offset = 4;
+        bptr.refId = structCId;  // points to InnerData
+        tree.addNode(bptr);
+
+        // Root's pointer to StructB
+        Node rptr;
+        rptr.kind = NodeKind::Pointer64;
+        rptr.name = "wrapper_ptr";
+        rptr.parentId = rootId;
+        rptr.offset = 0;
+        rptr.refId = structBId;
+        tree.addNode(rptr);
+
+        // Provider: rptr at 0 → addr 100, bptr at 100+4=104 → addr 150
+        QByteArray data(400, '\0');
+        uint64_t val1 = 100;
+        memcpy(data.data(), &val1, 8);       // rptr → 100
+        uint64_t val2 = 150;
+        memcpy(data.data() + 104, &val2, 8); // bptr at 104 → 150
+        BufferProvider prov(data);
+
+        ComposeResult result = compose(tree, prov);
+
+        // Must finish (no infinite loop)
+        QVERIFY(result.meta.size() > 0);
+        QVERIFY(result.meta.size() < 200);
+
+        // Check that ptr64<Wrapper> and ptr64<InnerData> both appear in text
+        bool foundWrapper = false, foundInner = false;
+        QStringList lines = result.text.split('\n');
+        for (const QString& l : lines) {
+            if (l.contains("ptr64<Wrapper>")) foundWrapper = true;
+            if (l.contains("ptr64<InnerData>")) foundInner = true;
+        }
+        QVERIFY2(foundWrapper, "Should display 'ptr64<Wrapper>'");
+        QVERIFY2(foundInner, "Should display 'ptr64<InnerData>'");
+
+        // The chain: Root → ptr64<Wrapper>(fold head) → Wrapper expanded →
+        //   ptr64<InnerData>(fold head) → InnerData expanded
+        int foldHeadCount = 0;
+        for (const LineMeta& lm : result.meta) {
+            if (lm.foldHead && lm.nodeKind == NodeKind::Pointer64)
+                foldHeadCount++;
+        }
+        // At least 2 fold-head pointers in the expansion chain (rptr + bptr)
+        // Plus standalone renderings of StructB and StructC
+        QVERIFY2(foldHeadCount >= 2,
+                 qPrintable(QString("Expected >=2 pointer fold heads, got %1")
+                            .arg(foldHeadCount)));
+    }
+
+    void testPointerMutualCycleAtoB() {
+        // A→B→A: Main has ptr to StructB, StructB has ptr back to Main
+        // Must not infinite-loop
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        // Main struct
+        Node main;
+        main.kind = NodeKind::Struct;
+        main.name = "Main";
+        main.parentId = 0;
+        main.offset = 0;
+        int mi = tree.addNode(main);
+        uint64_t mainId = tree.nodes[mi].id;
+
+        Node mf;
+        mf.kind = NodeKind::UInt32;
+        mf.name = "tag";
+        mf.parentId = mainId;
+        mf.offset = 0;
+        tree.addNode(mf);
+
+        // StructB
+        Node structB;
+        structB.kind = NodeKind::Struct;
+        structB.name = "StructB";
+        structB.parentId = 0;
+        structB.offset = 200;
+        int bi = tree.addNode(structB);
+        uint64_t structBId = tree.nodes[bi].id;
+
+        Node bf;
+        bf.kind = NodeKind::UInt32;
+        bf.name = "data";
+        bf.parentId = structBId;
+        bf.offset = 0;
+        tree.addNode(bf);
+
+        // Main → StructB pointer
+        Node ptrToB;
+        ptrToB.kind = NodeKind::Pointer64;
+        ptrToB.name = "to_b";
+        ptrToB.parentId = mainId;
+        ptrToB.offset = 4;
+        ptrToB.refId = structBId;
+        tree.addNode(ptrToB);
+
+        // StructB → Main pointer (creates cycle!)
+        Node ptrToMain;
+        ptrToMain.kind = NodeKind::Pointer64;
+        ptrToMain.name = "back";
+        ptrToMain.parentId = structBId;
+        ptrToMain.offset = 4;
+        ptrToMain.refId = mainId;
+        tree.addNode(ptrToMain);
+
+        // Provider: Main.to_b at offset 4 → addr 100
+        //           StructB expanded at 100: back at 100+4=104 → addr 50
+        //           Main expanded at 50: to_b at 50+4=54 → addr 100 (same as before → cycle!)
+        QByteArray data(300, '\0');
+        uint64_t val1 = 100;
+        memcpy(data.data() + 4, &val1, 8);     // Main.to_b → 100
+        uint64_t val2 = 50;
+        memcpy(data.data() + 104, &val2, 8);   // StructB.back at 104 → 50
+        uint64_t val3 = 100;
+        memcpy(data.data() + 54, &val3, 8);    // Main.to_b at 54 → 100 (cycle)
+        BufferProvider prov(data);
+
+        ComposeResult result = compose(tree, prov);
+
+        // MUST terminate with bounded output
+        QVERIFY(result.meta.size() > 0);
+        QVERIFY2(result.meta.size() < 100,
+                 qPrintable(QString("Cycle should be bounded, got %1 lines")
+                            .arg(result.meta.size())));
+
+        // Both ptr64<StructB> and ptr64<Main> should appear
+        bool foundToB = false, foundToMain = false;
+        QStringList lines = result.text.split('\n');
+        for (const QString& l : lines) {
+            if (l.contains("ptr64<StructB>")) foundToB = true;
+            if (l.contains("ptr64<Main>")) foundToMain = true;
+        }
+        QVERIFY2(foundToB, "Should display 'ptr64<StructB>'");
+        QVERIFY2(foundToMain, "Should display 'ptr64<Main>'");
+
+        // The first expansion of each pointer works;
+        // the cycle is caught on the second attempt
+        int mainHeaders = 0;
+        for (const LineMeta& lm : result.meta) {
+            if (lm.lineKind == LineKind::Header && lm.nodeIdx == mi)
+                mainHeaders++;
+        }
+        // Main appears as root + expanded once from StructB, then blocked on re-expansion
+        QVERIFY2(mainHeaders >= 1, "Main should appear at least once");
+    }
+
+    void testAllStructsResolvedAsPointerTargets() {
+        // Multiple structs in the tree; pointers to each should display the name
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Create several structs
+        QStringList structNames = {"Alpha", "Bravo", "Charlie", "Delta"};
+        QVector<uint64_t> structIds;
+        for (int i = 0; i < structNames.size(); i++) {
+            Node s;
+            s.kind = NodeKind::Struct;
+            s.name = structNames[i];
+            s.structTypeName = structNames[i];
+            s.parentId = 0;
+            s.offset = 1000 + i * 100;
+            int si = tree.addNode(s);
+            structIds << tree.nodes[si].id;
+
+            // Give each struct a field
+            Node f;
+            f.kind = NodeKind::UInt32;
+            f.name = "x";
+            f.parentId = tree.nodes[si].id;
+            f.offset = 0;
+            tree.addNode(f);
+        }
+
+        // Create a pointer to each struct
+        for (int i = 0; i < structIds.size(); i++) {
+            Node ptr;
+            ptr.kind = NodeKind::Pointer64;
+            ptr.name = QString("ptr_%1").arg(structNames[i].toLower());
+            ptr.parentId = rootId;
+            ptr.offset = i * 8;
+            ptr.refId = structIds[i];
+            ptr.collapsed = true;  // don't expand
+            tree.addNode(ptr);
+        }
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Every struct name should appear in a "ptr64<Name>" format
+        QStringList lines = result.text.split('\n');
+        for (const QString& sname : structNames) {
+            QString expected = QString("ptr64<%1>").arg(sname);
+            bool found = false;
+            for (const QString& l : lines) {
+                if (l.contains(expected)) { found = true; break; }
+            }
+            QVERIFY2(found, qPrintable(QString("Should display '%1'").arg(expected)));
+        }
+    }
+
+    void testPointerRefIdToDeletedStruct() {
+        // If refId points to a non-existent node, degrade to void*
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "dangling";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = 99999;  // non-existent ID
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // Should not crash, and degrade to void
+        QStringList lines = result.text.split('\n');
+        bool foundVoid = false;
+        for (const QString& l : lines) {
+            if (l.contains("ptr64<void>")) { foundVoid = true; break; }
+        }
+        QVERIFY2(foundVoid, "Dangling refId should degrade to ptr64<void>");
+    }
+
+    void testPointerCollapsedNoExpansion() {
+        // Collapsed pointer with valid non-null target must NOT expand
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.name = "Heavy";
+        target.parentId = 0;
+        target.offset = 200;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        // Many children in target - would inflate output if expanded
+        for (int i = 0; i < 10; i++) {
+            Node f;
+            f.kind = NodeKind::UInt64;
+            f.name = QString("f%1").arg(i);
+            f.parentId = targetId;
+            f.offset = i * 8;
+            tree.addNode(f);
+        }
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "heavy_ptr";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = true;  // COLLAPSED
+        tree.addNode(ptr);
+
+        // Non-null pointer value
+        QByteArray data(300, '\0');
+        uint64_t ptrVal = 100;
+        memcpy(data.data(), &ptrVal, 8);
+        BufferProvider prov(data);
+
+        ComposeResult result = compose(tree, prov);
+
+        // Count lines belonging to depth > 1 inside Root
+        // (There should be NONE because the pointer is collapsed)
+        int expandedLines = 0;
+        for (const LineMeta& lm : result.meta) {
+            // Lines at depth >= 2 would be inside the pointer expansion
+            if (lm.depth >= 2 && lm.nodeIdx >= 0 &&
+                tree.nodes[lm.nodeIdx].parentId == targetId)
+                expandedLines++;
+        }
+
+        // Standalone Heavy rendering adds lines at depth 1,
+        // but pointer expansion at depth >= 2 should be zero
+        QCOMPARE(expandedLines, 0);
+    }
+
+    void testPointerWidthComputation() {
+        // Type column must be wide enough for "ptr64<LongStructName>"
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.name = "VeryLongStructNameForTesting";
+        target.structTypeName = "VeryLongStructNameForTesting";
+        target.parentId = 0;
+        target.offset = 200;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "lptr";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = true;
+        tree.addNode(ptr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // The text must contain the FULL target name, not truncated
+        QStringList lines = result.text.split('\n');
+        bool foundFull = false;
+        for (const QString& l : lines) {
+            if (l.contains("ptr64<VeryLongStructNameForTesting>")) {
+                foundFull = true;
+                break;
+            }
+        }
+        QVERIFY2(foundFull,
+                 "Type column should be wide enough for long pointer target names");
+
+        // Layout type width should accommodate the long name
+        // "ptr64<VeryLongStructNameForTesting>" = 35 chars
+        QVERIFY2(result.layout.typeW >= 35,
+                 qPrintable(QString("typeW=%1, should be >= 35").arg(result.layout.typeW)));
+    }
+
+    void testTextIsNonEmpty() {
+        // Verify composed text is actually generated (not empty)
+        NodeTree tree;
+        tree.baseAddress = 0x1000;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "TestStruct";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Mix of types including pointers and arrays
+        Node f1;
+        f1.kind = NodeKind::UInt64;
+        f1.name = "id";
+        f1.parentId = rootId;
+        f1.offset = 0;
+        tree.addNode(f1);
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "next";
+        ptr.parentId = rootId;
+        ptr.offset = 8;
+        tree.addNode(ptr);
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "buf";
+        arr.parentId = rootId;
+        arr.offset = 16;
+        arr.elementKind = NodeKind::Hex8;
+        arr.arrayLen = 16;
+        arr.collapsed = true;
+        tree.addNode(arr);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        QVERIFY2(!result.text.isEmpty(), "Composed text must not be empty");
+        QVERIFY2(result.meta.size() >= 5,
+                 qPrintable(QString("Expected >= 5 lines, got %1").arg(result.meta.size())));
+
+        // Every line should have text content
+        QStringList lines = result.text.split('\n');
+        QCOMPARE(lines.size(), result.meta.size());
+        for (int i = 0; i < lines.size(); i++) {
+            QVERIFY2(!lines[i].isEmpty(),
+                     qPrintable(QString("Line %1 is empty").arg(i)));
         }
     }
 

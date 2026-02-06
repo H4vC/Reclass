@@ -42,7 +42,7 @@ public:
 
     bool isValid() const { return size() > 0; }
 
-    bool isReadable(uint64_t addr, int len) const {
+    virtual bool isReadable(uint64_t addr, int len) const {
         if (len <= 0) return (len == 0);
         uint64_t ulen = (uint64_t)len;
         return addr <= (uint64_t)size() && ulen <= (uint64_t)size() - addr;

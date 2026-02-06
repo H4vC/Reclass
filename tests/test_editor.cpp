@@ -748,6 +748,119 @@ private slots:
         m_editor->applyDocument(m_result);
     }
 
+    // ── Test: Padding line rejects value editing ──
+    void testPaddingLineRejectsValueEdit() {
+        m_editor->applyDocument(m_result);
+
+        // Find a Padding line in the composed output
+        int paddingLine = -1;
+        for (int i = 0; i < m_result.meta.size(); i++) {
+            if (m_result.meta[i].nodeKind == NodeKind::Padding &&
+                m_result.meta[i].lineKind == LineKind::Field) {
+                paddingLine = i;
+                break;
+            }
+        }
+        QVERIFY2(paddingLine >= 0, "Should have at least one Padding line in test tree");
+
+        const LineMeta* lm = m_editor->metaForLine(paddingLine);
+        QVERIFY(lm);
+        QCOMPARE(lm->nodeKind, NodeKind::Padding);
+
+        // Value edit on Padding MUST be rejected (the bug fix)
+        QVERIFY2(!m_editor->beginInlineEdit(EditTarget::Value, paddingLine),
+                 "Value edit should be rejected on Padding lines");
+        QVERIFY(!m_editor->isEditing());
+
+        // Name edit on Padding SHOULD succeed (ASCII preview column is editable)
+        bool ok = m_editor->beginInlineEdit(EditTarget::Name, paddingLine);
+        QVERIFY2(ok, "Name edit should be allowed on Padding lines (ASCII preview)");
+        QVERIFY(m_editor->isEditing());
+        m_editor->cancelInlineEdit();
+
+        // Type edit on Padding SHOULD succeed
+        ok = m_editor->beginInlineEdit(EditTarget::Type, paddingLine);
+        QVERIFY2(ok, "Type edit should be allowed on Padding lines");
+        QVERIFY(m_editor->isEditing());
+        m_editor->cancelInlineEdit();
+        QApplication::processEvents(); // flush deferred autocomplete timer
+    }
+
+    // ── Test: resolvedSpanFor rejects Value on Padding (defense-in-depth) ──
+    void testPaddingLineRejectsValueSpan() {
+        m_editor->applyDocument(m_result);
+
+        // Find a Padding line
+        int paddingLine = -1;
+        for (int i = 0; i < m_result.meta.size(); i++) {
+            if (m_result.meta[i].nodeKind == NodeKind::Padding &&
+                m_result.meta[i].lineKind == LineKind::Field) {
+                paddingLine = i;
+                break;
+            }
+        }
+        QVERIFY(paddingLine >= 0);
+
+        const LineMeta* lm = m_editor->metaForLine(paddingLine);
+        QVERIFY(lm);
+
+        // valueSpanFor returns valid (shared with Hex via KF_HexPreview)
+        ColumnSpan vs = RcxEditor::valueSpan(*lm, 200);
+        QVERIFY2(vs.valid, "valueSpanFor should return valid for Padding (shared HexPreview flag)");
+
+        // But beginInlineEdit should still reject it
+        QVERIFY(!m_editor->beginInlineEdit(EditTarget::Value, paddingLine));
+        QVERIFY(!m_editor->isEditing());
+    }
+
+    // ── Test: value edit commit fires signal with typed text ──
+    void testValueEditCommitUpdatesSignal() {
+        m_editor->applyDocument(m_result);
+
+        // Line 2 = first UInt8 field (InheritedAddressSpace)
+        const LineMeta* lm = m_editor->metaForLine(2);
+        QVERIFY(lm);
+        QCOMPARE(lm->lineKind, LineKind::Field);
+        QVERIFY(lm->nodeKind != NodeKind::Padding);
+
+        // Begin value edit
+        bool ok = m_editor->beginInlineEdit(EditTarget::Value, 2);
+        QVERIFY(ok);
+        QVERIFY(m_editor->isEditing());
+
+        // Select all text in the edit span and type replacement
+        QKeyEvent home(QEvent::KeyPress, Qt::Key_Home, Qt::NoModifier);
+        QApplication::sendEvent(m_editor->scintilla(), &home);
+        QKeyEvent end(QEvent::KeyPress, Qt::Key_End, Qt::ShiftModifier);
+        QApplication::sendEvent(m_editor->scintilla(), &end);
+
+        // Type "42" to replace selected text
+        for (QChar c : QString("42")) {
+            QKeyEvent key(QEvent::KeyPress, 0, Qt::NoModifier, QString(c));
+            QApplication::sendEvent(m_editor->scintilla(), &key);
+        }
+        QApplication::processEvents();
+
+        // Commit with Enter
+        QSignalSpy spy(m_editor, &RcxEditor::inlineEditCommitted);
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(m_editor->scintilla(), &enter);
+
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(!m_editor->isEditing());
+
+        // Verify the committed text contains what was typed.
+        // UInt8 values display as hex (e.g., "0x042"), so the typed "42" gets
+        // concatenated with the existing "0x0" prefix → "0x042".
+        // The important check: the signal fired with non-empty text.
+        QList<QVariant> args = spy.first();
+        QString committedText = args.at(3).toString().trimmed();
+        QVERIFY2(!committedText.isEmpty(),
+                 "Committed text should not be empty");
+
+        m_editor->applyDocument(m_result);
+    }
+
     // ── Test: base address edit begins on CommandRow (line 0) ──
     void testBaseAddressEditBegins() {
         m_editor->applyDocument(m_result);

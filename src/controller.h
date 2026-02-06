@@ -94,6 +94,7 @@ private:
     ComposeResult      m_lastResult;
     QSet<uint64_t>     m_selIds;
     int                m_anchorLine = -1;
+    bool               m_suppressRefresh = false;
 
     void connectEditor(RcxEditor* editor);
     void handleMarginClick(RcxEditor* editor, int margin, int line, Qt::KeyboardModifiers mods);

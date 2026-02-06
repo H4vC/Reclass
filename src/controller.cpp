@@ -20,9 +20,6 @@
 
 namespace rcx {
 
-// Footer selection ID: set high bit to distinguish footer-only selections from node selections
-static constexpr uint64_t kFooterIdBit = 0x8000000000000000ULL;
-
 static QString elide(QString s, int max) {
     if (max <= 0) return {};
     if (s.size() <= max) return s;
@@ -223,10 +220,14 @@ void RcxController::connectEditor(RcxEditor* editor) {
                         auto& node = m_doc->tree.nodes[nodeIdx];
                         if (node.kind != NodeKind::Struct)
                             changeNodeKind(nodeIdx, NodeKind::Struct);
-                        // Set the struct type name via rename of structTypeName
                         int idx = m_doc->tree.indexOfId(node.id);
-                        if (idx >= 0)
-                            m_doc->tree.nodes[idx].structTypeName = text;
+                        if (idx >= 0) {
+                            QString oldTypeName = m_doc->tree.nodes[idx].structTypeName;
+                            if (oldTypeName != text) {
+                                m_doc->undoStack.push(new RcxCommand(this,
+                                    cmd::ChangeStructTypeName{node.id, oldTypeName, text}));
+                            }
+                        }
                     }
                 }
             }
@@ -305,6 +306,53 @@ void RcxController::connectEditor(RcxEditor* editor) {
             }
             break;
         }
+        case EditTarget::ArrayElementType: {
+            if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) break;
+            const Node& node = m_doc->tree.nodes[nodeIdx];
+            if (node.kind != NodeKind::Array) break;
+            bool ok;
+            NodeKind elemKind = kindFromTypeName(text, &ok);
+            if (ok && elemKind != node.elementKind) {
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::ChangeArrayMeta{node.id,
+                        node.elementKind, elemKind,
+                        node.arrayLen, node.arrayLen}));
+            }
+            break;
+        }
+        case EditTarget::ArrayElementCount: {
+            if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) break;
+            const Node& node = m_doc->tree.nodes[nodeIdx];
+            if (node.kind != NodeKind::Array) break;
+            bool ok;
+            int newLen = text.toInt(&ok);
+            if (ok && newLen > 0 && newLen <= 100000 && newLen != node.arrayLen) {
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::ChangeArrayMeta{node.id,
+                        node.elementKind, node.elementKind,
+                        node.arrayLen, newLen}));
+            }
+            break;
+        }
+        case EditTarget::PointerTarget: {
+            if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) break;
+            Node& node = m_doc->tree.nodes[nodeIdx];
+            if (node.kind != NodeKind::Pointer32 && node.kind != NodeKind::Pointer64) break;
+            // Find the struct with matching name or structTypeName
+            uint64_t newRefId = 0;
+            for (const auto& n : m_doc->tree.nodes) {
+                if (n.kind == NodeKind::Struct &&
+                    (n.structTypeName == text || n.name == text)) {
+                    newRefId = n.id;
+                    break;
+                }
+            }
+            if (newRefId != node.refId) {
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::ChangePointerRef{node.id, node.refId, newRefId}));
+            }
+            break;
+        }
         case EditTarget::ArrayIndex:
         case EditTarget::ArrayCount:
             // Array navigation removed - these cases are unreachable
@@ -367,6 +415,10 @@ void RcxController::changeNodeKind(int nodeIdx, NodeKind newKind) {
         uint64_t parentId = node.parentId;
         int baseOffset = node.offset + newSize;
 
+        bool wasSuppressed = m_suppressRefresh;
+        m_suppressRefresh = true;
+        m_doc->undoStack.beginMacro(QStringLiteral("Change type"));
+
         // Push type change with no offset adjustments
         m_doc->undoStack.push(new RcxCommand(this,
             cmd::ChangeKind{node.id, node.kind, newKind, {}}));
@@ -386,6 +438,10 @@ void RcxController::changeNodeKind(int nodeIdx, NodeKind newKind) {
             padOffset += padSize;
             gap -= padSize;
         }
+
+        m_doc->undoStack.endMacro();
+        m_suppressRefresh = wasSuppressed;
+        if (!m_suppressRefresh) refresh();
     } else {
         // Same size or larger: adjust sibling offsets as before
         int delta = newSize - oldSize;
@@ -551,10 +607,19 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
                 if (tree.nodes[idx].viewIndex >= tree.nodes[idx].arrayLen)
                     tree.nodes[idx].viewIndex = qMax(0, tree.nodes[idx].arrayLen - 1);
             }
+        } else if constexpr (std::is_same_v<T, cmd::ChangePointerRef>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].refId = isUndo ? c.oldRefId : c.newRefId;
+        } else if constexpr (std::is_same_v<T, cmd::ChangeStructTypeName>) {
+            int idx = tree.indexOfId(c.nodeId);
+            if (idx >= 0)
+                tree.nodes[idx].structTypeName = isUndo ? c.oldName : c.newName;
         }
     }, command);
 
-    refresh();
+    if (!m_suppressRefresh)
+        refresh();
 }
 
 void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text,
@@ -745,12 +810,15 @@ void RcxController::batchRemoveNodes(const QVector<int>& nodeIndices) {
     m_selIds.clear();
     m_anchorLine = -1;
 
+    m_suppressRefresh = true;
     m_doc->undoStack.beginMacro(QString("Delete %1 nodes").arg(idSet.size()));
     for (uint64_t id : idSet) {
         int idx = m_doc->tree.indexOfId(id);
         if (idx >= 0) removeNode(idx);
     }
     m_doc->undoStack.endMacro();
+    m_suppressRefresh = false;
+    refresh();
 }
 
 void RcxController::batchChangeKind(const QVector<int>& nodeIndices, NodeKind newKind) {
@@ -766,12 +834,15 @@ void RcxController::batchChangeKind(const QVector<int>& nodeIndices, NodeKind ne
     m_selIds.clear();
     m_anchorLine = -1;
 
+    m_suppressRefresh = true;
     m_doc->undoStack.beginMacro(QString("Change type of %1 nodes").arg(idSet.size()));
     for (uint64_t id : idSet) {
         int idx = m_doc->tree.indexOfId(id);
         if (idx >= 0) changeNodeKind(idx, newKind);
     }
     m_doc->undoStack.endMacro();
+    m_suppressRefresh = false;
+    refresh();
 }
 
 void RcxController::handleNodeClick(RcxEditor* source, int line,
@@ -811,7 +882,7 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
             int to   = qMax(m_anchorLine, line);
             for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
                 uint64_t nid = m_lastResult.meta[i].nodeId;
-                if (nid != 0) m_selIds.insert(effectiveId(i, nid));
+                if (nid != 0 && nid != kCommandRowId) m_selIds.insert(effectiveId(i, nid));
             }
         }
     } else { // Ctrl+Shift
@@ -823,7 +894,7 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
             int to   = qMax(m_anchorLine, line);
             for (int i = from; i <= to && i < m_lastResult.meta.size(); i++) {
                 uint64_t nid = m_lastResult.meta[i].nodeId;
-                if (nid != 0) m_selIds.insert(effectiveId(i, nid));
+                if (nid != 0 && nid != kCommandRowId) m_selIds.insert(effectiveId(i, nid));
             }
         }
     }
@@ -869,7 +940,7 @@ void RcxController::updateCommandRow() {
         int idx = m_doc->tree.indexOfId(sid & ~kFooterIdBit);
         if (idx >= 0) {
             const auto& node = m_doc->tree.nodes[idx];
-            uint64_t addr = m_doc->tree.baseAddress + node.offset;
+            uint64_t addr = m_doc->tree.baseAddress + m_doc->tree.computeOffset(idx);
             sym = m_doc->provider->getSymbol(addr);
         }
     }

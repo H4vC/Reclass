@@ -13,6 +13,7 @@ class RcxEditor : public QWidget {
     Q_OBJECT
 public:
     explicit RcxEditor(QWidget* parent = nullptr);
+    ~RcxEditor() override;
 
     void applyDocument(const ComposeResult& result);
 
@@ -71,7 +72,7 @@ private:
     uint64_t m_hoveredNodeId = 0;
     int      m_hoveredLine = -1;
     QSet<uint64_t> m_currentSelIds;
-    int m_hoverSpanLine = -1;  // Line with hover span indicator
+    QVector<int> m_hoverSpanLines;  // Lines with hover span indicators
     // ── Drag selection ──
     bool m_dragging = false;
     bool m_dragStarted = false;   // true once drag threshold exceeded
@@ -134,6 +135,9 @@ private:
     void showSourcePicker();
     void showTypeListFiltered(const QString& filter);
     void updateTypeListFilter();
+    void showPointerTargetPicker();
+    void showPointerTargetListFiltered(const QString& filter);
+    void updatePointerTargetFilter();
     void paintEditableSpans(int line);
     void updateEditableIndicators(int line);
     void applyHoverCursor();

@@ -48,10 +48,6 @@ file(WRITE ${_combine_script} "
 set(_out \"${CMAKE_BINARY_DIR}/h_cpp_combined.txt\")
 file(WRITE \${_out} \"\")
 foreach(_f
-    \"${CMAKE_SOURCE_DIR}/src/providers/provider.h\"
-    \"${CMAKE_SOURCE_DIR}/src/providers/buffer_provider.h\"
-    \"${CMAKE_SOURCE_DIR}/src/providers/null_provider.h\"
-    \"${CMAKE_SOURCE_DIR}/src/providers/process_provider.h\"
     \"${CMAKE_SOURCE_DIR}/src/core.h\"
     \"${CMAKE_SOURCE_DIR}/src/editor.h\"
     \"${CMAKE_SOURCE_DIR}/src/editor.cpp\"
@@ -117,4 +113,13 @@ if(BUILD_TESTING)
         target_link_libraries(test_provider_getSymbol PRIVATE psapi)
     endif()
     add_test(NAME test_provider_getSymbol COMMAND test_provider_getSymbol)
+
+    add_executable(test_controller tests/test_controller.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/processpicker.cpp src/processpicker.ui)
+    target_include_directories(test_controller PRIVATE src)
+    target_link_libraries(test_controller PRIVATE
+        Qt6::Widgets Qt6::PrintSupport Qt6::Test
+        QScintilla::QScintilla dbghelp psapi)
+    add_test(NAME test_controller COMMAND test_controller)
 endif()

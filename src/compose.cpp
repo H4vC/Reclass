@@ -65,6 +65,14 @@ uint32_t computeMarkers(const Node& node, const Provider& /*prov*/,
     return mask;
 }
 
+static QString resolvePointerTarget(const NodeTree& tree, uint64_t refId) {
+    if (refId == 0) return {};
+    int refIdx = tree.indexOfId(refId);
+    if (refIdx < 0) return {};
+    const Node& ref = tree.nodes[refIdx];
+    return ref.structTypeName.isEmpty() ? ref.name : ref.structTypeName;
+}
+
 static inline uint64_t ptrToProviderAddr(const NodeTree& tree, uint64_t ptr) {
     if (tree.baseAddress && ptr >= tree.baseAddress) return ptr - tree.baseAddress;
     return ptr;
@@ -113,6 +121,14 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         numLines = linesForKind(node.kind);
     }
 
+    // Resolve pointer target name for display
+    QString ptrTypeOverride;
+    QString ptrTargetName;
+    if (node.kind == NodeKind::Pointer32 || node.kind == NodeKind::Pointer64) {
+        ptrTargetName = resolvePointerTarget(tree, node.refId);
+        ptrTypeOverride = fmt::pointerTypeName(node.kind, ptrTargetName);
+    }
+
     for (int sub = 0; sub < numLines; sub++) {
         bool isCont = (sub > 0);
 
@@ -129,9 +145,10 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.foldLevel       = computeFoldLevel(depth, false);
         lm.effectiveTypeW  = typeW;
         lm.effectiveNameW  = nameW;
+        lm.pointerTargetName = ptrTargetName;
 
         QString lineText = fmt::fmtNodeLine(node, prov, absAddr, depth, sub,
-                                            /*comment=*/{}, typeW, nameW);
+                                            /*comment=*/{}, typeW, nameW, ptrTypeOverride);
         state.emitLine(lineText, lm);
     }
 }
@@ -269,15 +286,19 @@ void composeNode(ComposeState& state, const NodeTree& tree,
     int typeW = state.effectiveTypeW(scopeId);
     int nameW = state.effectiveNameW(scopeId);
 
-    // Pointer deref expansion
+    // Pointer deref expansion — single fold header merges pointer + struct header
     if ((node.kind == NodeKind::Pointer32 || node.kind == NodeKind::Pointer64)
         && node.refId != 0) {
+        QString ptrTargetName = resolvePointerTarget(tree, node.refId);
+        QString ptrTypeOverride = fmt::pointerTypeName(node.kind, ptrTargetName);
+
+        // Emit merged fold header: "ptr64<Type> Name {" (expanded) or "ptr64<Type> Name -> val" (collapsed)
         {
             LineMeta lm;
             lm.nodeIdx    = nodeIdx;
             lm.nodeId     = node.id;
             lm.depth      = depth;
-            lm.lineKind   = LineKind::Field;
+            lm.lineKind   = node.collapsed ? LineKind::Field : LineKind::Header;
             lm.offsetText = fmt::fmtOffsetMargin(absAddr, false);
             lm.nodeKind   = node.kind;
             lm.foldHead      = true;
@@ -286,8 +307,12 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             lm.markerMask = computeMarkers(node, prov, absAddr, false, depth);
             lm.effectiveTypeW = typeW;
             lm.effectiveNameW = nameW;
-            state.emitLine(fmt::fmtNodeLine(node, prov, absAddr, depth, 0, {}, typeW, nameW), lm);
+            lm.pointerTargetName = ptrTargetName;
+            state.emitLine(fmt::fmtPointerHeader(node, depth, node.collapsed,
+                                                  prov, absAddr, ptrTypeOverride,
+                                                  typeW, nameW), lm);
         }
+
         if (!node.collapsed) {
             int sz = node.byteSize();
             if (prov.isValid() && sz > 0 && prov.isReadable(absAddr, sz)) {
@@ -302,12 +327,30 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                         if (refIdx >= 0) {
                             const Node& ref = tree.nodes[refIdx];
                             if (ref.kind == NodeKind::Struct || ref.kind == NodeKind::Array)
+                                // isArrayChild=true skips header/footer, emits children only
+                                // depth (not depth+1): pointer header replaces struct header,
+                                // so children should be at depth+1, not depth+2
                                 composeParent(state, tree, prov, refIdx,
-                                              depth + 1, pBase, ref.id);
+                                              depth, pBase, ref.id,
+                                              /*isArrayChild=*/true);
                         }
                         state.ptrVisiting.remove(key);
                     }
                 }
+            }
+
+            // Footer for pointer fold
+            {
+                LineMeta lm;
+                lm.nodeIdx   = nodeIdx;
+                lm.nodeId    = node.id;
+                lm.depth     = depth;
+                lm.lineKind  = LineKind::Footer;
+                lm.nodeKind  = node.kind;
+                lm.offsetText.clear();
+                lm.foldLevel = computeFoldLevel(depth, false);
+                lm.markerMask = 0;
+                state.emitLine(fmt::indent(depth) + QStringLiteral("}"), lm);
             }
         }
         return;
@@ -334,21 +377,22 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
     for (int i = 0; i < tree.nodes.size(); i++)
         state.absOffsets[i] = tree.computeOffset(i);
 
+    // Helper: compute the display type string for a node (for width calculation)
+    auto nodeTypeName = [&](const Node& n) -> QString {
+        if (n.kind == NodeKind::Array)
+            return fmt::arrayTypeName(n.elementKind, n.arrayLen);
+        if (n.kind == NodeKind::Struct)
+            return fmt::structTypeName(n);
+        if (n.kind == NodeKind::Pointer32 || n.kind == NodeKind::Pointer64)
+            return fmt::pointerTypeName(n.kind, resolvePointerTarget(tree, n.refId));
+        return fmt::typeNameRaw(n.kind);
+    };
+
     // Compute effective type column width from longest type name
     // Include struct/array headers which use "struct TypeName" or "type[count]" format
     int maxTypeLen = kMinTypeW;
     for (const Node& node : tree.nodes) {
-        QString typeName;
-        if (node.kind == NodeKind::Array) {
-            // Array type: "int32_t[10]", "char[64]", etc.
-            typeName = fmt::arrayTypeName(node.elementKind, node.arrayLen);
-        } else if (node.kind == NodeKind::Struct) {
-            // Struct type: "struct TypeName" or "struct"
-            typeName = fmt::structTypeName(node);
-        } else {
-            typeName = fmt::typeNameRaw(node.kind);
-        }
-        maxTypeLen = qMax(maxTypeLen, (int)typeName.size());
+        maxTypeLen = qMax(maxTypeLen, (int)nodeTypeName(node).size());
     }
     state.typeW = qBound(kMinTypeW, maxTypeLen, kMaxTypeW);
 
@@ -373,16 +417,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
 
         for (int childIdx : state.childMap.value(container.id)) {
             const Node& child = tree.nodes[childIdx];
-
-            // Type width - include struct/array headers too (they now use columnar layout)
-            QString childTypeName;
-            if (child.kind == NodeKind::Array)
-                childTypeName = fmt::arrayTypeName(child.elementKind, child.arrayLen);
-            else if (child.kind == NodeKind::Struct)
-                childTypeName = fmt::structTypeName(child);
-            else
-                childTypeName = fmt::typeNameRaw(child.kind);
-            scopeMaxType = qMax(scopeMaxType, (int)childTypeName.size());
+            scopeMaxType = qMax(scopeMaxType, (int)nodeTypeName(child).size());
 
             // Name width (skip hex/padding, but include containers)
             if (!isHexPreview(child.kind)) {
@@ -401,16 +436,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
         int rootMaxName = kMinNameW;
         for (int childIdx : state.childMap.value(0)) {
             const Node& child = tree.nodes[childIdx];
-
-            // Type width - include struct/array headers
-            QString childTypeName;
-            if (child.kind == NodeKind::Array)
-                childTypeName = fmt::arrayTypeName(child.elementKind, child.arrayLen);
-            else if (child.kind == NodeKind::Struct)
-                childTypeName = fmt::structTypeName(child);
-            else
-                childTypeName = fmt::typeNameRaw(child.kind);
-            rootMaxType = qMax(rootMaxType, (int)childTypeName.size());
+            rootMaxType = qMax(rootMaxType, (int)nodeTypeName(child).size());
 
             // Name width (skip hex/padding, include containers)
             if (!isHexPreview(child.kind)) {

@@ -271,10 +271,11 @@ void MainWindow::newFile() {
     auto* doc = new RcxDocument(this);
 
     // ══════════════════════════════════════════════════════════════════════════
-    // _PEB64 Demo — Process Environment Block (0x7D0 bytes)
+    // _PEB64 Demo — Process Environment Block + stub structs
+    // Buffer covers PEB (0x7D0) + _PEB_LDR_DATA (0x800) + _RTL_USER_PROCESS_PARAMETERS (0x900)
     // ══════════════════════════════════════════════════════════════════════════
 
-    QByteArray pebData(0x7D0, '\0');
+    QByteArray pebData(0x940, '\0');
     char* d = pebData.data();
 
     auto w8  = [&](int off, uint8_t  v) { d[off] = (char)v; };
@@ -286,8 +287,8 @@ void MainWindow::newFile() {
     w8 (0x003, 0x04);                           // BitField
     w64(0x008, 0xFFFFFFFFFFFFFFFFULL);          // Mutant (-1)
     w64(0x010, 0x00007FF6DE120000ULL);          // ImageBaseAddress
-    w64(0x018, 0x00007FFE3B8B53C0ULL);          // Ldr
-    w64(0x020, 0x000001A4C3E20F90ULL);          // ProcessParameters
+    w64(0x018, 0x000000D87B5E5800ULL);          // Ldr (baseAddress + 0x800)
+    w64(0x020, 0x000000D87B5E5900ULL);          // ProcessParameters (baseAddress + 0x900)
     w64(0x030, 0x000001A4C3D40000ULL);          // ProcessHeap
     w64(0x038, 0x00007FFE3B8D4260ULL);          // FastPebLock
     w32(0x050, 0x01);                           // CrossProcessFlags
@@ -329,6 +330,26 @@ void MainWindow::newFile() {
     w64(0x398, 0x000000D87B5E5390ULL);          // TppWorkerpList.Blink (self)
     w64(0x7B8, 0x00007FFE38860000ULL);          // LeapSecondData
 
+    // ── _PEB_LDR_DATA at offset 0x800 ──
+    w32(0x800, 0x48);                             // Length
+    w8 (0x804, 0x01);                             // Initialized
+    w64(0x808, 0x0000000000000000ULL);            // SsHandle
+    w64(0x810, 0x000001A4C3D40100ULL);            // InLoadOrderModuleList.Flink
+    w64(0x818, 0x000001A4C3D40200ULL);            // InLoadOrderModuleList.Blink
+    w64(0x820, 0x000001A4C3D40110ULL);            // InMemoryOrderModuleList.Flink
+    w64(0x828, 0x000001A4C3D40210ULL);            // InMemoryOrderModuleList.Blink
+
+    // ── _RTL_USER_PROCESS_PARAMETERS at offset 0x900 ──
+    w32(0x900, 0x07B0);                           // MaximumLength
+    w32(0x904, 0x07B0);                           // Length
+    w32(0x908, 0x0001);                           // Flags (NORMALIZED)
+    w32(0x90C, 0x0000);                           // DebugFlags
+    w64(0x910, 0x0000000000000044ULL);            // ConsoleHandle
+    w32(0x918, 0x0000);                           // ConsoleFlags
+    w64(0x920, 0x0000000000000008ULL);            // StandardInput
+    w64(0x928, 0x000000000000000CULL);            // StandardOutput
+    w64(0x930, 0x0000000000000010ULL);            // StandardError
+
     doc->loadData(pebData);
     doc->tree.baseAddress = 0x000000D87B5E5000ULL;
 
@@ -359,7 +380,17 @@ void MainWindow::newFile() {
         n.parentId = parent; n.offset = offset;
         n.arrayLen = count; n.elementKind = elemKind;
         n.collapsed = true;
-        doc->tree.addNode(n);
+        int idx = doc->tree.addNode(n);
+        uint64_t arrId = doc->tree.nodes[idx].id;
+        int elemSz = sizeForKind(elemKind);
+        if (elemSz > 0) {
+            for (int i = 0; i < count; i++) {
+                Node e; e.kind = elemKind;
+                e.name = QStringLiteral("[%1]").arg(i);
+                e.parentId = arrId; e.offset = i * elemSz;
+                doc->tree.addNode(e);
+            }
+        }
     };
 
     // Root struct (not collapsed so fields are visible on open)
@@ -375,8 +406,8 @@ void MainWindow::newFile() {
     // 0x008 – 0x04F
     addField(peb, 0x008, NodeKind::Pointer64, "Mutant");
     addField(peb, 0x010, NodeKind::Pointer64, "ImageBaseAddress");
-    addField(peb, 0x018, NodeKind::Pointer64, "Ldr");
-    addField(peb, 0x020, NodeKind::Pointer64, "ProcessParameters");
+    uint64_t ldrPtrId = addField(peb, 0x018, NodeKind::Pointer64, "Ldr");
+    uint64_t ppPtrId  = addField(peb, 0x020, NodeKind::Pointer64, "ProcessParameters");
     addField(peb, 0x028, NodeKind::Pointer64, "SubSystemData");
     addField(peb, 0x030, NodeKind::Pointer64, "ProcessHeap");
     addField(peb, 0x038, NodeKind::Pointer64, "FastPebLock");
@@ -508,6 +539,45 @@ void MainWindow::newFile() {
     addField(peb, 0x7C0, NodeKind::UInt32,    "LeapSecondFlags");
     addField(peb, 0x7C4, NodeKind::UInt32,    "NtGlobalFlag2");
     addField(peb, 0x7C8, NodeKind::UInt64,    "ExtendedFeatureDisableMask");
+
+    // ── Stub structs for pointer deref demo ──
+    // _PEB_LDR_DATA (Ldr target)
+    uint64_t ldrData = addStruct(0, 0x800, "_PEB_LDR_DATA", "LdrData");
+    addField(ldrData, 0x00, NodeKind::UInt32,    "Length");
+    addField(ldrData, 0x04, NodeKind::UInt8,     "Initialized");
+    addPad  (ldrData, 0x05, 3,                   "Pad");
+    addField(ldrData, 0x08, NodeKind::Pointer64, "SsHandle");
+    {
+        uint64_t le = addStruct(ldrData, 0x10, "LIST_ENTRY64", "InLoadOrderModuleList");
+        addField(le, 0, NodeKind::Pointer64, "Flink");
+        addField(le, 8, NodeKind::Pointer64, "Blink");
+    }
+    {
+        uint64_t le = addStruct(ldrData, 0x20, "LIST_ENTRY64", "InMemoryOrderModuleList");
+        addField(le, 0, NodeKind::Pointer64, "Flink");
+        addField(le, 8, NodeKind::Pointer64, "Blink");
+    }
+
+    // _RTL_USER_PROCESS_PARAMETERS (ProcessParameters target)
+    uint64_t procParams = addStruct(0, 0x900, "_RTL_USER_PROCESS_PARAMETERS", "ProcessParams");
+    addField(procParams, 0x00, NodeKind::UInt32,    "MaximumLength");
+    addField(procParams, 0x04, NodeKind::UInt32,    "Length");
+    addField(procParams, 0x08, NodeKind::UInt32,    "Flags");
+    addField(procParams, 0x0C, NodeKind::UInt32,    "DebugFlags");
+    addField(procParams, 0x10, NodeKind::Pointer64, "ConsoleHandle");
+    addField(procParams, 0x18, NodeKind::UInt32,    "ConsoleFlags");
+    addPad  (procParams, 0x1C, 4,                   "Pad");
+    addField(procParams, 0x20, NodeKind::Pointer64, "StandardInput");
+    addField(procParams, 0x28, NodeKind::Pointer64, "StandardOutput");
+    addField(procParams, 0x30, NodeKind::Pointer64, "StandardError");
+
+    // Wire up pointer refIds
+    {
+        int li = doc->tree.indexOfId(ldrPtrId);
+        if (li >= 0) doc->tree.nodes[li].refId = ldrData;
+        int pi = doc->tree.indexOfId(ppPtrId);
+        if (pi >= 0) doc->tree.nodes[pi].refId = procParams;
+    }
 
     createTab(doc);
 }

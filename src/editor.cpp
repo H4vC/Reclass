@@ -28,9 +28,6 @@ static constexpr int IND_BASE_ADDR  = 10;  // Green color for base address
 static constexpr int IND_HOVER_SPAN = 11;  // Blue text on hover (link-like)
 static constexpr int IND_CMD_PILL   = 12;  // Rounded chip behind command row spans
 
-// Footer selection ID: set high bit to distinguish footer-only selections from node selections
-static constexpr uint64_t kFooterIdBit = 0x8000000000000000ULL;
-
 static QString g_fontName = "Consolas";
 
 static QFont editorFont() {
@@ -80,7 +77,9 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
     connect(m_sci, &QsciScintilla::userListActivated,
             this, [this](int id, const QString& text) {
         if (!m_editState.active) return;
-        if (id == 1 && m_editState.target == EditTarget::Type) {
+        if (id == 1 && (m_editState.target == EditTarget::Type
+                     || m_editState.target == EditTarget::ArrayElementType
+                     || m_editState.target == EditTarget::PointerTarget)) {
             auto info = endInlineEdit();
             emit inlineEditCommitted(info.nodeIdx, info.subLine, info.target, text);
         }
@@ -94,12 +93,19 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
         if (m_updatingComment) return;  // Skip queuing during comment update
         if (m_editState.target == EditTarget::Value)
             QTimer::singleShot(0, this, &RcxEditor::validateEditLive);
-        if (m_editState.target == EditTarget::Type)
+        if (m_editState.target == EditTarget::Type || m_editState.target == EditTarget::ArrayElementType)
             QTimer::singleShot(0, this, &RcxEditor::updateTypeListFilter);
+        if (m_editState.target == EditTarget::PointerTarget)
+            QTimer::singleShot(0, this, &RcxEditor::updatePointerTargetFilter);
     });
 
     connect(m_sci, &QsciScintilla::selectionChanged,
             this, &RcxEditor::clampEditSelection);
+}
+
+RcxEditor::~RcxEditor() {
+    if (m_cursorOverridden)
+        QApplication::restoreOverrideCursor();
 }
 
 void RcxEditor::setupScintilla() {
@@ -723,6 +729,10 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
 
     if (lm->nodeIdx < 0) return false;
 
+    // Padding: reject value editing (hex bytes are display-only)
+    if (t == EditTarget::Value && lm->nodeKind == NodeKind::Padding)
+        return false;
+
     QString lineText = getLineText(m_sci, line);
     int textLen = lineText.size();
 
@@ -739,13 +749,24 @@ bool RcxEditor::resolvedSpanFor(int line, EditTarget t,
     case EditTarget::ArrayIndex:
     case EditTarget::ArrayCount:
         break;  // Array navigation removed
+    case EditTarget::ArrayElementType:
+        s = arrayElemTypeSpanFor(*lm, lineText); break;
+    case EditTarget::ArrayElementCount:
+        s = arrayElemCountSpanFor(*lm, lineText); break;
+    case EditTarget::PointerTarget:
+        s = pointerTargetSpanFor(*lm, lineText); break;
+    case EditTarget::Source: break;
     }
 
     // Fallback spans for header lines
     if (!s.valid && t == EditTarget::Type) {
+        // For pointer fields, the full type span acts as "kind" span
+        // For array headers, fall back to the full type[count] span
         s = arrayHeaderTypeSpan(*lm, lineText);
         if (!s.valid)
             s = headerTypeNameSpan(*lm, lineText);
+        if (!s.valid)
+            s = pointerKindSpanFor(*lm, lineText);
     }
     if (!s.valid && t == EditTarget::Name)
         s = headerNameSpan(*lm, lineText);
@@ -829,6 +850,22 @@ static bool hitTestTarget(QsciScintilla* sci,
     ColumnSpan ns = RcxEditor::nameSpan(lm, typeW, nameW);
     ColumnSpan vs = RcxEditor::valueSpan(lm, textLen, typeW, nameW);
 
+    // Pointer fields/headers: check sub-spans within type column first
+    if (lm.nodeKind == NodeKind::Pointer32 || lm.nodeKind == NodeKind::Pointer64) {
+        ColumnSpan ptrTarget = pointerTargetSpanFor(lm, lineText);
+        ColumnSpan ptrKind = pointerKindSpanFor(lm, lineText);
+        if (inSpan(ptrTarget)) { outTarget = EditTarget::PointerTarget; outLine = line; return true; }
+        if (inSpan(ptrKind))   { outTarget = EditTarget::Type; outLine = line; return true; }
+    }
+
+    // Array headers: check element type and count sub-spans first
+    if (lm.isArrayHeader) {
+        ColumnSpan elemType = arrayElemTypeSpanFor(lm, lineText);
+        ColumnSpan elemCount = arrayElemCountSpanFor(lm, lineText);
+        if (inSpan(elemCount)) { outTarget = EditTarget::ArrayElementCount; outLine = line; return true; }
+        if (inSpan(elemType))  { outTarget = EditTarget::ArrayElementType; outLine = line; return true; }
+    }
+
     // Fallback spans for header lines
     if (!ts.valid) {
         ts = arrayHeaderTypeSpan(lm, lineText);
@@ -843,6 +880,10 @@ static bool hitTestTarget(QsciScintilla* sci,
     else if (inSpan(vs)) outTarget = EditTarget::Value;
     else return false;
 
+    // Padding nodes: hex bytes are display-only, not editable
+    if (outTarget == EditTarget::Value && lm.nodeKind == NodeKind::Padding)
+        return false;
+
     outLine = line;
     return true;
 }
@@ -852,7 +893,14 @@ static bool hitTestTarget(QsciScintilla* sci,
 bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
     if (obj == m_sci && event->type() == QEvent::KeyPress) {
         auto* ke = static_cast<QKeyEvent*>(event);
-        return m_editState.active ? handleEditKey(ke) : handleNormalKey(ke);
+        bool handled = m_editState.active ? handleEditKey(ke) : handleNormalKey(ke);
+        if (!handled && !m_editState.active) {
+            // Clear hover on keyboard navigation (stale after scroll)
+            m_hoveredNodeId = 0;
+            m_hoveredLine = -1;
+            applyHoverHighlight();
+        }
+        return handled;
     }
     if (obj == m_sci->viewport() && event->type() == QEvent::MouseButtonPress
         && m_editState.active) {
@@ -882,6 +930,9 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
                 case EditTarget::Source:      raw = commandRowSrcSpan(lineText); break;
                 case EditTarget::ArrayIndex:  raw = arrayIndexSpanFor(*lm, lineText); break;
                 case EditTarget::ArrayCount:  raw = arrayCountSpanFor(*lm, lineText); break;
+                case EditTarget::ArrayElementType:  raw = arrayElemTypeSpanFor(*lm, lineText); break;
+                case EditTarget::ArrayElementCount: raw = arrayElemCountSpanFor(*lm, lineText); break;
+                case EditTarget::PointerTarget:     raw = pointerTargetSpanFor(*lm, lineText); break;
                 }
                 if (raw.valid && h.col >= raw.start && h.col < raw.end) {
                     // Within raw span but outside trimmed text → move cursor to end
@@ -1009,6 +1060,10 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         int line; EditTarget t;
         if (hitTestTarget(m_sci, m_meta, me->pos(), line, t)) {
             m_pendingClickNodeId = 0;   // cancel deferred selection change
+            // Narrow selection to this node before editing
+            auto h = hitTest(me->pos());
+            if (h.nodeId != 0 && h.nodeId != kCommandRowId)
+                emit nodeClicked(h.line, h.nodeId, Qt::NoModifier);
             return beginInlineEdit(t, line);
         }
     }
@@ -1079,12 +1134,15 @@ bool RcxEditor::handleNormalKey(QKeyEvent* ke) {
     case Qt::Key_Enter:
         return beginInlineEdit(EditTarget::Value);
     case Qt::Key_Tab: {
-        EditTarget order[] = {EditTarget::Name, EditTarget::Type, EditTarget::Value};
+        EditTarget order[] = {EditTarget::Name, EditTarget::Type, EditTarget::Value,
+                              EditTarget::ArrayElementType, EditTarget::ArrayElementCount,
+                              EditTarget::PointerTarget};
+        constexpr int N = 6;
         int start = 0;
-        for (int i = 0; i < 3; i++)
-            if (order[i] == m_lastTabTarget) { start = (i + 1) % 3; break; }
-        for (int i = 0; i < 3; i++) {
-            EditTarget t = order[(start + i) % 3];
+        for (int i = 0; i < N; i++)
+            if (order[i] == m_lastTabTarget) { start = (i + 1) % N; break; }
+        for (int i = 0; i < N; i++) {
+            EditTarget t = order[(start + i) % N];
             if (beginInlineEdit(t)) { m_lastTabTarget = t; return true; }
         }
         return true;
@@ -1127,7 +1185,14 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
     case Qt::Key_Backspace: {
         int line, col;
         m_sci->getCursorPosition(&line, &col);
-        if (col <= m_editState.spanStart) return true;
+        int minCol = m_editState.spanStart;
+        // Don't allow backing into "0x" prefix
+        if (m_editState.target == EditTarget::Value || m_editState.target == EditTarget::BaseAddress) {
+            QString lineText = getLineText(m_sci, m_editState.line);
+            if (lineText.mid(m_editState.spanStart, 2).startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
+                minCol = m_editState.spanStart + 2;
+        }
+        if (col <= minCol) return true;
         return false;
     }
     case Qt::Key_Right: {
@@ -1136,9 +1201,17 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
         if (col >= editEndCol()) return true;  // block past end
         return false;
     }
-    case Qt::Key_Home:
-        m_sci->setCursorPosition(m_editState.line, m_editState.spanStart);
+    case Qt::Key_Home: {
+        int home = m_editState.spanStart;
+        // Skip "0x" prefix for hex values
+        if (m_editState.target == EditTarget::Value || m_editState.target == EditTarget::BaseAddress) {
+            QString lineText = getLineText(m_sci, m_editState.line);
+            if (lineText.mid(m_editState.spanStart, 2).startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
+                home = m_editState.spanStart + 2;
+        }
+        m_sci->setCursorPosition(m_editState.line, home);
         return true;
+    }
     case Qt::Key_End:
         m_sci->setCursorPosition(m_editState.line, editEndCol());
         return true;
@@ -1168,6 +1241,9 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     // Allow nodeIdx=-1 only for CommandRow BaseAddress/Source editing
     if (lm->nodeIdx < 0 && !(lm->lineKind == LineKind::CommandRow &&
         (target == EditTarget::BaseAddress || target == EditTarget::Source)))
+        return false;
+    // Padding: reject value editing (display-only hex bytes)
+    if (target == EditTarget::Value && lm->nodeKind == NodeKind::Padding)
         return false;
 
     QString lineText;
@@ -1202,8 +1278,9 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 1);
     m_sci->setReadOnly(false);
-    // Switch to I-beam for editing (skip for Type/Source which use popup pickers)
-    if (target != EditTarget::Type && target != EditTarget::Source) {
+    // Switch to I-beam for editing (skip for picker-based targets)
+    if (target != EditTarget::Type && target != EditTarget::Source
+        && target != EditTarget::ArrayElementType && target != EditTarget::PointerTarget) {
         if (m_cursorOverridden) {
             QApplication::changeOverrideCursor(Qt::IBeamCursor);
         } else {
@@ -1233,10 +1310,12 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     if (target == EditTarget::Value)
         setEditComment(QStringLiteral("Enter=Save Esc=Cancel"));
 
-    if (target == EditTarget::Type)
+    if (target == EditTarget::Type || target == EditTarget::ArrayElementType)
         QTimer::singleShot(0, this, &RcxEditor::showTypeAutocomplete);
     if (target == EditTarget::Source)
         QTimer::singleShot(0, this, &RcxEditor::showSourcePicker);
+    if (target == EditTarget::PointerTarget)
+        QTimer::singleShot(0, this, &RcxEditor::showPointerTargetPicker);
 
     return true;
 }
@@ -1321,7 +1400,8 @@ void RcxEditor::cancelInlineEdit() {
 // ── Type picker (user list) ──
 
 void RcxEditor::showTypeAutocomplete() {
-    if (!m_editState.active || m_editState.target != EditTarget::Type)
+    if (!m_editState.active ||
+        (m_editState.target != EditTarget::Type && m_editState.target != EditTarget::ArrayElementType))
         return;
     // Replace original type with spaces (keeps layout, clears for typing)
     int len = m_editState.original.size();
@@ -1338,7 +1418,8 @@ void RcxEditor::showTypeAutocomplete() {
 }
 
 void RcxEditor::showTypeListFiltered(const QString& filter) {
-    if (!m_editState.active || m_editState.target != EditTarget::Type)
+    if (!m_editState.active ||
+        (m_editState.target != EditTarget::Type && m_editState.target != EditTarget::ArrayElementType))
         return;
 
     // Combine native types with custom (struct) type names
@@ -1358,8 +1439,8 @@ void RcxEditor::showTypeListFiltered(const QString& filter) {
     if (filtered.isEmpty()) return;  // No matches - keep list hidden
 
     // Show user list (id=1 for types) - selection handled by userListActivated signal
-    QByteArray list = filtered.join(' ').toUtf8();
-    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)' ');
+    QByteArray list = filtered.join('\n').toUtf8();
+    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
     m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
                          (uintptr_t)1, list.constData());
     // Arrow cursor for popup is handled by applyHoverCursor() via isListActive()
@@ -1389,15 +1470,15 @@ void RcxEditor::showSourcePicker() {
 }
 
 void RcxEditor::updateTypeListFilter() {
-    if (!m_editState.active || m_editState.target != EditTarget::Type)
+    if (!m_editState.active ||
+        (m_editState.target != EditTarget::Type && m_editState.target != EditTarget::ArrayElementType))
         return;
 
     // Get currently typed text from line
     QString lineText = getLineText(m_sci, m_editState.line);
     long curPos = m_sci->SendScintilla(QsciScintillaBase::SCI_GETCURRENTPOS);
-    long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE,
-                                          (unsigned long)m_editState.line);
-    int col = (int)(curPos - lineStart);
+    int col = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETCOLUMN,
+                                         (unsigned long)curPos);
 
     // Extract text from spanStart to cursor
     int len = col - m_editState.spanStart;
@@ -1408,6 +1489,68 @@ void RcxEditor::updateTypeListFilter() {
 
     QString typed = lineText.mid(m_editState.spanStart, len);
     showTypeListFiltered(typed);
+}
+
+// ── Pointer target picker ──
+
+void RcxEditor::showPointerTargetPicker() {
+    if (!m_editState.active || m_editState.target != EditTarget::PointerTarget)
+        return;
+    // Replace original target with spaces (keeps layout, clears for typing)
+    int len = m_editState.original.size();
+    QString spaces(len, ' ');
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSEL,
+                         m_editState.posStart, m_editState.posEnd);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACESEL,
+                         (uintptr_t)0, spaces.toUtf8().constData());
+    m_sci->SendScintilla(QsciScintillaBase::SCI_GOTOPOS, m_editState.posStart);
+    showPointerTargetListFiltered(QString());
+}
+
+void RcxEditor::showPointerTargetListFiltered(const QString& filter) {
+    if (!m_editState.active || m_editState.target != EditTarget::PointerTarget)
+        return;
+
+    // Build list: "void" + all struct type names
+    QStringList all;
+    all << QStringLiteral("void");
+    for (const QString& ct : m_customTypeNames) {
+        if (!all.contains(ct))
+            all << ct;
+    }
+    all.sort(Qt::CaseInsensitive);
+    // Ensure "void" is always first
+    all.removeAll(QStringLiteral("void"));
+    all.prepend(QStringLiteral("void"));
+
+    QStringList filtered;
+    for (const QString& t : all) {
+        if (filter.isEmpty() || t.startsWith(filter, Qt::CaseInsensitive))
+            filtered << t;
+    }
+    if (filtered.isEmpty()) return;
+
+    QByteArray list = filtered.join('\n').toUtf8();
+    m_sci->SendScintilla(QsciScintillaBase::SCI_AUTOCSETSEPARATOR, (long)'\n');
+    m_sci->SendScintilla(QsciScintillaBase::SCI_USERLISTSHOW,
+                         (uintptr_t)1, list.constData());
+}
+
+void RcxEditor::updatePointerTargetFilter() {
+    if (!m_editState.active || m_editState.target != EditTarget::PointerTarget)
+        return;
+
+    QString lineText = getLineText(m_sci, m_editState.line);
+    long curPos = m_sci->SendScintilla(QsciScintillaBase::SCI_GETCURRENTPOS);
+    int col = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETCOLUMN,
+                                         (unsigned long)curPos);
+    int len = col - m_editState.spanStart;
+    if (len <= 0) {
+        showPointerTargetListFiltered(QString());
+        return;
+    }
+    QString typed = lineText.mid(m_editState.spanStart, len);
+    showPointerTargetListFiltered(typed);
 }
 
 // ── Editable-field text-color indicator ──
@@ -1425,7 +1568,9 @@ void RcxEditor::paintEditableSpans(int line) {
         return;
     }
     NormalizedSpan norm;
-    for (EditTarget t : {EditTarget::Type, EditTarget::Name, EditTarget::Value}) {
+    for (EditTarget t : {EditTarget::Type, EditTarget::Name, EditTarget::Value,
+                         EditTarget::ArrayElementType, EditTarget::ArrayElementCount,
+                         EditTarget::PointerTarget}) {
         if (resolvedSpanFor(line, t, norm))
             fillIndicatorCols(IND_EDITABLE, line, norm.start, norm.end);
     }
@@ -1479,11 +1624,10 @@ void RcxEditor::updateEditableIndicators(int line) {
 // ── Hover cursor ──
 
 void RcxEditor::applyHoverCursor() {
-    // Clear previous hover span indicator
-    if (m_hoverSpanLine >= 0) {
-        clearIndicatorLine(IND_HOVER_SPAN, m_hoverSpanLine);
-        m_hoverSpanLine = -1;
-    }
+    // Clear previous hover span indicators
+    for (int ln : m_hoverSpanLines)
+        clearIndicatorLine(IND_HOVER_SPAN, ln);
+    m_hoverSpanLines.clear();
 
     // Edit mode handles its own cursor (I-beam)
     if (m_editState.active)
@@ -1511,22 +1655,48 @@ void RcxEditor::applyHoverCursor() {
         return;
     }
 
+    auto h = hitTest(m_lastHoverPos);
     int line; EditTarget t;
     bool tokenHit = hitTestTarget(m_sci, m_meta, m_lastHoverPos, line, t);
 
-    // Apply hover span indicator (blue text like a link) for editable spans
-    if (tokenHit) {
+    // For hex preview nodes, check if cursor is in the data area (ASCII or hex bytes)
+    int hoverLine = h.line;
+    bool inHexDataArea = false;
+    uint64_t hoverNodeId = 0;
+    if (hoverLine >= 0 && hoverLine < m_meta.size()
+        && isHexPreview(m_meta[hoverLine].nodeKind)) {
+        hoverNodeId = m_meta[hoverLine].nodeId;
+        if (hoverNodeId != 0 && h.col >= 0) {
+            int ind = kFoldCol + m_meta[hoverLine].depth * 3;
+            int typeW = m_meta[hoverLine].effectiveTypeW;
+            int dataStart = ind + typeW + kSepWidth;
+            inHexDataArea = (h.col >= dataStart);
+        }
+    }
+
+    // Apply hover span indicator
+    if (inHexDataArea) {
+        // Hex preview nodes: highlight ASCII + hex byte areas on ALL lines of this node
+        for (int i = 0; i < m_meta.size(); i++) {
+            if (m_meta[i].nodeId != hoverNodeId) continue;
+            int ind = kFoldCol + m_meta[i].depth * 3;
+            int typeW = m_meta[i].effectiveTypeW;
+            int asciiStart = ind + typeW + kSepWidth;
+            int hexEnd = asciiStart + 8 + kSepWidth + 23;
+            fillIndicatorCols(IND_HOVER_SPAN, i, asciiStart, hexEnd);
+            m_hoverSpanLines.append(i);
+        }
+    } else if (tokenHit) {
         NormalizedSpan span;
         if (resolvedSpanFor(line, t, span)) {
             fillIndicatorCols(IND_HOVER_SPAN, line, span.start, span.end);
-            m_hoverSpanLine = line;
+            m_hoverSpanLines.append(line);
         }
     }
 
     // Also show pointer cursor for fold column on fold-head lines
-    bool interactive = tokenHit;
+    bool interactive = tokenHit || inHexDataArea;
     if (!interactive) {
-        auto h = hitTest(m_lastHoverPos);
         if (h.inFoldCol) interactive = true;
     }
 

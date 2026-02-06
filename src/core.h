@@ -71,7 +71,7 @@ inline constexpr KindMeta kKindMeta[] = {
     {NodeKind::Double,    "Double",    "double",      8,  1,  8, KF_None},
     {NodeKind::Bool,      "Bool",      "bool",        1,  1,  1, KF_None},
     {NodeKind::Pointer32, "Pointer32", "ptr32",       4,  1,  4, KF_None},
-    {NodeKind::Pointer64, "Pointer64", "void*",       8,  1,  8, KF_None},
+    {NodeKind::Pointer64, "Pointer64", "ptr64",       8,  1,  8, KF_None},
     {NodeKind::Vec2,      "Vec2",      "Vec2",        8,  2,  4, KF_Vector},
     {NodeKind::Vec3,      "Vec3",      "Vec3",       12,  3,  4, KF_Vector},
     {NodeKind::Vec4,      "Vec4",      "Vec4",       16,  4,  4, KF_Vector},
@@ -378,6 +378,7 @@ enum class LineKind : uint8_t {
 static constexpr uint64_t kCommandRowId   = UINT64_MAX;
 static constexpr int      kCommandRowLine = 0;
 static constexpr int      kFirstDataLine  = 1;
+static constexpr uint64_t kFooterIdBit    = 0x8000000000000000ULL;
 
 struct LineMeta {
     int      nodeIdx        = -1;
@@ -400,6 +401,7 @@ struct LineMeta {
     uint32_t markerMask     = 0;
     int      effectiveTypeW = 14;  // Per-line type column width used for rendering
     int      effectiveNameW = 22;  // Per-line name column width used for rendering
+    QString  pointerTargetName;    // Resolved target type name for Pointer32/64 (empty = "void")
 };
 
 inline bool isSyntheticLine(const LineMeta& lm) {
@@ -437,12 +439,15 @@ namespace cmd {
     struct ChangeArrayMeta { uint64_t nodeId;
                              NodeKind oldElementKind, newElementKind;
                              int oldArrayLen, newArrayLen; };
+    struct ChangePointerRef { uint64_t nodeId;
+                              uint64_t oldRefId, newRefId; };
+    struct ChangeStructTypeName { uint64_t nodeId; QString oldName, newName; };
 }
 
 using Command = std::variant<
     cmd::ChangeKind, cmd::Rename, cmd::Collapse,
     cmd::Insert, cmd::Remove, cmd::ChangeBase, cmd::WriteBytes,
-    cmd::ChangeArrayMeta
+    cmd::ChangeArrayMeta, cmd::ChangePointerRef, cmd::ChangeStructTypeName
 >;
 
 // ── Column spans (for inline editing) ──
@@ -453,7 +458,8 @@ struct ColumnSpan {
     bool valid = false;
 };
 
-enum class EditTarget { Name, Type, Value, BaseAddress, Source, ArrayIndex, ArrayCount };
+enum class EditTarget { Name, Type, Value, BaseAddress, Source, ArrayIndex, ArrayCount,
+                        ArrayElementType, ArrayElementCount, PointerTarget };
 
 // Column layout constants (shared with format.cpp span computation)
 inline constexpr int kFoldCol     = 3;   // 3-char fold indicator prefix per line
@@ -555,6 +561,52 @@ inline ColumnSpan commandRowAddrSpan(const QString& lineText) {
     return {start, end, true};
 }
 
+// ── Array element type/count spans (within type column of array headers) ──
+// Line format: "   int32_t[10]  name  {"
+// arrayElemTypeSpan covers "int32_t", arrayElemCountSpan covers "10"
+
+inline ColumnSpan arrayElemTypeSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isArrayHeader) return {};
+    int ind = kFoldCol + lm.depth * 3;
+    // Find '[' in the type portion
+    int bracket = lineText.indexOf('[', ind);
+    if (bracket <= ind) return {};
+    return {ind, bracket, true};
+}
+
+inline ColumnSpan arrayElemCountSpanFor(const LineMeta& lm, const QString& lineText) {
+    if (lm.lineKind != LineKind::Header || !lm.isArrayHeader) return {};
+    int ind = kFoldCol + lm.depth * 3;
+    int openBracket = lineText.indexOf('[', ind);
+    int closeBracket = lineText.indexOf(']', openBracket);
+    if (openBracket < 0 || closeBracket < 0 || closeBracket <= openBracket + 1) return {};
+    return {openBracket + 1, closeBracket, true};
+}
+
+// ── Pointer kind/target spans (within type column of pointer fields) ──
+// Line format: "   ptr64<void>    name  -> 0x..."
+// pointerKindSpan covers "ptr64" or "ptr32", pointerTargetSpan covers the target name inside <>
+
+inline ColumnSpan pointerKindSpanFor(const LineMeta& lm, const QString& lineText) {
+    if ((lm.lineKind != LineKind::Field && lm.lineKind != LineKind::Header) || lm.isContinuation) return {};
+    if (lm.nodeKind != NodeKind::Pointer32 && lm.nodeKind != NodeKind::Pointer64) return {};
+    int ind = kFoldCol + lm.depth * 3;
+    // Find '<' in the type portion
+    int lt = lineText.indexOf('<', ind);
+    if (lt <= ind) return {};
+    return {ind, lt, true};
+}
+
+inline ColumnSpan pointerTargetSpanFor(const LineMeta& lm, const QString& lineText) {
+    if ((lm.lineKind != LineKind::Field && lm.lineKind != LineKind::Header) || lm.isContinuation) return {};
+    if (lm.nodeKind != NodeKind::Pointer32 && lm.nodeKind != NodeKind::Pointer64) return {};
+    int ind = kFoldCol + lm.depth * 3;
+    int lt = lineText.indexOf('<', ind);
+    int gt = lineText.indexOf('>', lt);
+    if (lt < 0 || gt < 0 || gt <= lt + 1) return {};
+    return {lt + 1, gt, true};
+}
+
 // ── Array navigation spans ──
 // Line format: "uint32_t[16]  name  { <0/16>"
 
@@ -619,13 +671,18 @@ namespace fmt {
     QString fmtPointer64(uint64_t v);
     QString fmtNodeLine(const Node& node, const Provider& prov,
                         uint64_t addr, int depth, int subLine = 0,
-                        const QString& comment = {}, int colType = kColType, int colName = kColName);
+                        const QString& comment = {}, int colType = kColType, int colName = kColName,
+                        const QString& typeOverride = {});
     QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation);
     QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType = kColType, int colName = kColName);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
     QString fmtArrayHeader(const Node& node, int depth, int viewIdx, bool collapsed, int colType = kColType, int colName = kColName);
     QString structTypeName(const Node& node);  // Full type string for struct headers
     QString arrayTypeName(NodeKind elemKind, int count);
+    QString pointerTypeName(NodeKind kind, const QString& targetName);
+    QString fmtPointerHeader(const Node& node, int depth, bool collapsed,
+                             const Provider& prov, uint64_t addr,
+                             const QString& ptrTypeName, int colType = kColType, int colName = kColName);
     QString validateBaseAddress(const QString& text);
     QString indent(int depth);
     QString readValue(const Node& node, const Provider& prov,

@@ -35,6 +35,7 @@ public:
     ProcessProvider& operator=(const ProcessProvider&) = delete;
 
     int size() const override { return m_size; }
+    bool isReadable(uint64_t, int len) const override { return len >= 0; }
 
     bool read(uint64_t addr, void* buf, int len) const override {
         SIZE_T got = 0;

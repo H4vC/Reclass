@@ -51,6 +51,14 @@ QString arrayTypeName(NodeKind elemKind, int count) {
     return elem + QStringLiteral("[") + QString::number(count) + QStringLiteral("]");
 }
 
+// Pointer type string: "ptr64<void>" or "ptr64<StructName>"
+QString pointerTypeName(NodeKind kind, const QString& targetName) {
+    auto* m = kindMeta(kind);
+    QString base = m ? QString::fromLatin1(m->typeName) : QStringLiteral("???");
+    QString target = targetName.isEmpty() ? QStringLiteral("void") : targetName;
+    return base + QStringLiteral("<") + target + QStringLiteral(">");
+}
+
 // ── Value formatting ──
 
 static QString hexVal(uint64_t v) {
@@ -130,6 +138,22 @@ QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collap
     QString name = fit(node.name, colName);
     QString suffix = collapsed ? QString() : QStringLiteral("{");
     return ind + type + SEP + name + SEP + suffix;
+}
+
+// ── Pointer header (merged pointer + struct header) ──
+
+QString fmtPointerHeader(const Node& node, int depth, bool collapsed,
+                         const Provider& prov, uint64_t addr,
+                         const QString& ptrTypeName, int colType, int colName) {
+    QString ind = indent(depth);
+    QString type = fit(ptrTypeName, colType);
+    QString name = fit(node.name, colName);
+    if (collapsed) {
+        // Collapsed: show pointer value instead of brace
+        QString val = fit(readValue(node, prov, addr, 0), COL_VALUE);
+        return ind + type + SEP + name + SEP + val;
+    }
+    return ind + type + SEP + name + SEP + QStringLiteral("{");
 }
 
 // ── Hex / ASCII preview ──
@@ -277,9 +301,10 @@ QString readValue(const Node& node, const Provider& prov,
 
 QString fmtNodeLine(const Node& node, const Provider& prov,
                     uint64_t addr, int depth, int subLine,
-                    const QString& comment, int colType, int colName) {
+                    const QString& comment, int colType, int colName,
+                    const QString& typeOverride) {
     QString ind = indent(depth);
-    QString type = typeName(node.kind, colType);
+    QString type = typeOverride.isEmpty() ? typeName(node.kind, colType) : fit(typeOverride, colType);
     QString name = fit(node.name, colName);
     // Blank prefix for continuation lines (same width as type+sep+name+sep)
     const int prefixW = colType + colName + 2 * kSepWidth;
