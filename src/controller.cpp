@@ -21,6 +21,14 @@
 
 namespace rcx {
 
+static thread_local const RcxDocument* s_composeDoc = nullptr;
+
+static QString docTypeNameProvider(NodeKind k) {
+    if (s_composeDoc) return s_composeDoc->resolveTypeName(k);
+    auto* m = kindMeta(k);
+    return m ? QString::fromLatin1(m->typeName) : QStringLiteral("???");
+}
+
 static QString elide(QString s, int max) {
     if (max <= 0) return {};
     if (s.size() <= max) return s;
@@ -63,12 +71,21 @@ RcxDocument::RcxDocument(QObject* parent)
     });
 }
 
-ComposeResult RcxDocument::compose() const {
-    return rcx::compose(tree, *provider);
+ComposeResult RcxDocument::compose(uint64_t viewRootId) const {
+    return rcx::compose(tree, *provider, viewRootId);
 }
 
 bool RcxDocument::save(const QString& path) {
     QJsonObject json = tree.toJson();
+
+    // Save type aliases
+    if (!typeAliases.isEmpty()) {
+        QJsonObject aliasObj;
+        for (auto it = typeAliases.begin(); it != typeAliases.end(); ++it)
+            aliasObj[kindToString(it.key())] = it.value();
+        json["typeAliases"] = aliasObj;
+    }
+
     QJsonDocument jdoc(json);
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly))
@@ -86,7 +103,19 @@ bool RcxDocument::load(const QString& path) {
         return false;
     undoStack.clear();
     QJsonDocument jdoc = QJsonDocument::fromJson(file.readAll());
-    tree = NodeTree::fromJson(jdoc.object());
+    QJsonObject root = jdoc.object();
+    tree = NodeTree::fromJson(root);
+
+    // Load type aliases
+    typeAliases.clear();
+    QJsonObject aliasObj = root["typeAliases"].toObject();
+    for (auto it = aliasObj.begin(); it != aliasObj.end(); ++it) {
+        NodeKind k = kindFromString(it.key());
+        QString v = it.value().toString();
+        if (!v.isEmpty())
+            typeAliases[k] = v;
+    }
+
     filePath = path;
     modified = false;
     emit documentChanged();
@@ -125,6 +154,7 @@ void RcxCommand::redo() { m_ctrl->applyCommand(m_cmd, false); }
 RcxController::RcxController(RcxDocument* doc, QWidget* parent)
     : QObject(parent), m_doc(doc)
 {
+    fmt::setTypeNameProvider(docTypeNameProvider);
     connect(m_doc, &RcxDocument::documentChanged, this, &RcxController::refresh);
     setupAutoRefresh();
 }
@@ -469,12 +499,28 @@ void RcxController::connectEditor(RcxEditor* editor) {
             this, [this]() { refresh(); });
 }
 
+void RcxController::setViewRootId(uint64_t id) {
+    if (m_viewRootId == id) return;
+    m_viewRootId = id;
+    refresh();
+}
+
+void RcxController::scrollToNodeId(uint64_t nodeId) {
+    if (auto* editor = primaryEditor())
+        editor->scrollToNodeId(nodeId);
+}
+
 void RcxController::refresh() {
+    // Bracket compose with thread-local doc pointer for type name resolution
+    s_composeDoc = m_doc;
+
     // Compose against snapshot provider if active, otherwise real provider
     if (m_snapshotProv)
-        m_lastResult = rcx::compose(m_doc->tree, *m_snapshotProv);
+        m_lastResult = rcx::compose(m_doc->tree, *m_snapshotProv, m_viewRootId);
     else
-        m_lastResult = m_doc->compose();
+        m_lastResult = m_doc->compose(m_viewRootId);
+
+    s_composeDoc = nullptr;
 
     // Mark lines whose node data changed since last refresh
     if (!m_changedOffsets.isEmpty()) {

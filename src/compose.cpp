@@ -384,7 +384,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
 
 } // anonymous namespace
 
-ComposeResult compose(const NodeTree& tree, const Provider& prov) {
+ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewRootId) {
     ComposeState state;
 
     // Precompute parent→children map
@@ -504,6 +504,12 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov) {
     });
 
     for (int idx : roots) {
+        // If viewRootId is set, skip roots that don't match
+        if (viewRootId != 0 && tree.nodes[idx].id != viewRootId)
+            continue;
+        // Skip collapsed roots unless specifically targeted by viewRootId
+        if (viewRootId == 0 && tree.nodes[idx].collapsed)
+            continue;
         composeNode(state, tree, prov, idx, 0);
     }
 

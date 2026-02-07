@@ -747,6 +747,6 @@ namespace fmt {
 
 // ── Compose function forward declaration ──
 
-ComposeResult compose(const NodeTree& tree, const Provider& prov);
+ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewRootId = 0);
 
 } // namespace rcx

@@ -28,8 +28,17 @@ public:
     QString                    filePath;
     QString                    dataPath;
     bool                       modified = false;
+    QHash<NodeKind, QString>   typeAliases;
 
-    ComposeResult compose() const;
+    QString resolveTypeName(NodeKind kind) const {
+        auto it = typeAliases.find(kind);
+        if (it != typeAliases.end() && !it.value().isEmpty())
+            return it.value();
+        auto* m = kindMeta(kind);
+        return m ? QString::fromLatin1(m->typeName) : QStringLiteral("???");
+    }
+
+    ComposeResult compose(uint64_t viewRootId = 0) const;
     bool save(const QString& path);
     bool load(const QString& path);
     void loadData(const QString& binaryPath);
@@ -96,6 +105,10 @@ public:
     void applySelectionOverlays();
     QSet<uint64_t> selectedIds() const { return m_selIds; }
 
+    void setViewRootId(uint64_t id);
+    uint64_t viewRootId() const { return m_viewRootId; }
+    void scrollToNodeId(uint64_t nodeId);
+
     RcxDocument* document() const { return m_doc; }
     void setEditorFont(const QString& fontName);
 
@@ -110,6 +123,7 @@ private:
     QSet<uint64_t>     m_selIds;
     int                m_anchorLine = -1;
     bool               m_suppressRefresh = false;
+    uint64_t           m_viewRootId = 0;
 
     // ── Saved sources for quick-switch ──
     QVector<SavedSourceEntry> m_savedSources;

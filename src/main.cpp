@@ -25,6 +25,15 @@
 #include <QPainter>
 #include <QSvgRenderer>
 #include <QSettings>
+#include <QDockWidget>
+#include <QTreeView>
+#include <QStandardItemModel>
+#include "workspace_model.h"
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QDialogButtonBox>
+#include <QVBoxLayout>
+#include <QDialog>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexercpp.h>
 
@@ -148,6 +157,14 @@ private slots:
     void about();
     void setEditorFont(const QString& fontName);
     void exportCpp();
+    void showTypeAliasesDialog();
+
+public:
+    // Project Lifecycle API
+    QMdiSubWindow* project_new();
+    QMdiSubWindow* project_open(const QString& path = {});
+    bool project_save(QMdiSubWindow* sub = nullptr, bool saveAs = false);
+    void project_close(QMdiSubWindow* sub = nullptr);
 
 private:
     enum ViewMode { VM_Reclass, VM_Rendered };
@@ -184,6 +201,13 @@ private:
     void syncRenderMenuState();
     uint64_t findRootStructForNode(const NodeTree& tree, uint64_t nodeId) const;
     void setupRenderedSci(QsciScintilla* sci);
+
+    // Workspace dock
+    QDockWidget*        m_workspaceDock  = nullptr;
+    QTreeView*          m_workspaceTree  = nullptr;
+    QStandardItemModel* m_workspaceModel = nullptr;
+    void createWorkspaceDock();
+    void rebuildWorkspaceModel();
 };
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -198,11 +222,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     createMenus();
     createStatusBar();
+    createWorkspaceDock();
 
     connect(m_mdiArea, &QMdiArea::subWindowActivated,
             this, [this](QMdiSubWindow*) {
         updateWindowTitle();
         syncRenderMenuState();
+        rebuildWorkspaceModel();
     });
 }
 
@@ -244,6 +270,8 @@ void MainWindow::createMenus() {
     auto* edit = menuBar()->addMenu("&Edit");
     edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
     edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
+    edit->addSeparator();
+    edit->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
 
     // View
     auto* view = menuBar()->addMenu("&View");
@@ -319,6 +347,7 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
             it->doc->deleteLater();
             m_tabs.erase(it);
         }
+        rebuildWorkspaceModel();
     });
 
     connect(ctrl, &RcxController::nodeSelected,
@@ -354,7 +383,7 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
             m_statusLabel->setText(QString("%1 nodes selected").arg(count));
     });
 
-    // Update rendered view on document changes and undo/redo
+    // Update rendered view and workspace on document changes and undo/redo
     connect(doc, &RcxDocument::documentChanged,
             this, [this, sub]() {
         auto it = m_tabs.find(sub);
@@ -362,6 +391,7 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
             QTimer::singleShot(0, this, [this, sub]() {
                 auto it2 = m_tabs.find(sub);
                 if (it2 != m_tabs.end()) updateRenderedView(*it2);
+                rebuildWorkspaceModel();
             });
     });
     connect(&doc->undoStack, &QUndoStack::indexChanged,
@@ -375,31 +405,12 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
     });
 
     ctrl->refresh();
+    rebuildWorkspaceModel();
     return sub;
 }
 
 void MainWindow::newFile() {
-    auto* doc = new RcxDocument(this);
-
-    QByteArray data(16, '\0');
-    doc->loadData(data);
-    doc->tree.baseAddress = 0x00400000;
-
-    Node root;
-    root.kind = NodeKind::Struct;
-    root.name = "Entity";
-    root.structTypeName = "Entity";
-    root.parentId = 0;
-    root.offset = 0;
-    int ri = doc->tree.addNode(root);
-    uint64_t rootId = doc->tree.nodes[ri].id;
-
-    { Node n; n.kind = NodeKind::Int32; n.name = "health"; n.parentId = rootId; n.offset = 0;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Int32; n.name = "armor";  n.parentId = rootId; n.offset = 4;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Float; n.name = "speed";  n.parentId = rootId; n.offset = 8;  doc->tree.addNode(n); }
-    { Node n; n.kind = NodeKind::Hex32; n.name = "flags";  n.parentId = rootId; n.offset = 12; doc->tree.addNode(n); }
-
-    createTab(doc);
+    project_new();
 }
 
 void MainWindow::selfTest() {
@@ -420,22 +431,97 @@ void MainWindow::selfTest() {
         hProc, base, kTestDataSize, "ReclassX.exe");
     doc->tree.baseAddress = base;
 
-    Node root;
-    root.kind = NodeKind::Struct;
-    root.name = "MyClass";
-    root.structTypeName = "MyClass";
-    root.parentId = 0;
-    root.offset = 0;
-    int ri = doc->tree.addNode(root);
-    uint64_t rootId = doc->tree.nodes[ri].id;
+    // ── Pet (root struct, 64 bytes) ──
+    {
+        Node pet;
+        pet.kind = NodeKind::Struct;
+        pet.name = "aPet";
+        pet.structTypeName = "Pet";
+        pet.parentId = 0;
+        pet.offset = 0;
+        int pi = doc->tree.addNode(pet);
+        uint64_t petId = doc->tree.nodes[pi].id;
 
-    for (int i = 0; i < 16; i++) {
-        Node n;
-        n.kind = NodeKind::Hex64;
-        n.name = QStringLiteral("field_%1").arg(i);
-        n.parentId = rootId;
-        n.offset = i * 8;
-        doc->tree.addNode(n);
+        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = petId; n.offset = 0;  n.strLen = 24; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_18"; n.parentId = petId; n.offset = 24; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Int32;     n.name = "age";    n.parentId = petId; n.offset = 32; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;     n.name = "weight"; n.parentId = petId; n.offset = 36; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = petId; n.offset = 40; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Bool;      n.name = "alive";  n.parentId = petId; n.offset = 48; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;      n.name = "field_31"; n.parentId = petId; n.offset = 49; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;     n.name = "field_32"; n.parentId = petId; n.offset = 50; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32;    n.name = "flags";  n.parentId = petId; n.offset = 52; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_38"; n.parentId = petId; n.offset = 56; doc->tree.addNode(n); }
+    }
+
+    // ── Cat : Pet (root struct, inherits Pet at offset 0) ──
+    {
+        Node cat;
+        cat.kind = NodeKind::Struct;
+        cat.name = "aCat";
+        cat.structTypeName = "Cat";
+        cat.classKeyword = "class";
+        cat.parentId = 0;
+        cat.offset = 0;
+        int ci = doc->tree.addNode(cat);
+        uint64_t catId = doc->tree.nodes[ci].id;
+
+        // Embedded base Pet
+        Node base;
+        base.kind = NodeKind::Struct;
+        base.name = "base";
+        base.structTypeName = "Pet";
+        base.parentId = catId;
+        base.offset = 0;
+        int bi = doc->tree.addNode(base);
+        uint64_t baseId = doc->tree.nodes[bi].id;
+
+        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = baseId; n.offset = 0;  n.strLen = 24; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_18"; n.parentId = baseId; n.offset = 24; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Int32;     n.name = "age";    n.parentId = baseId; n.offset = 32; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;     n.name = "weight"; n.parentId = baseId; n.offset = 36; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = baseId; n.offset = 40; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Bool;      n.name = "alive";  n.parentId = baseId; n.offset = 48; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;      n.name = "field_31"; n.parentId = baseId; n.offset = 49; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;     n.name = "field_32"; n.parentId = baseId; n.offset = 50; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32;    n.name = "flags";  n.parentId = baseId; n.offset = 52; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "field_38"; n.parentId = baseId; n.offset = 56; doc->tree.addNode(n); }
+
+        // Cat's own fields after base
+        { Node n; n.kind = NodeKind::Float;  n.name = "whiskerLen"; n.parentId = catId; n.offset = 64; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt8;  n.name = "lives";     n.parentId = catId; n.offset = 68; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_45";  n.parentId = catId; n.offset = 69; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_46";  n.parentId = catId; n.offset = 70; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Bool;   n.name = "indoor";    n.parentId = catId; n.offset = 72; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_49";  n.parentId = catId; n.offset = 73; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_4A";  n.parentId = catId; n.offset = 74; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Int32;  n.name = "miceKilled"; n.parentId = catId; n.offset = 76; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_50";  n.parentId = catId; n.offset = 80; doc->tree.addNode(n); }
+    }
+
+    // ── Ball (standalone root struct) ──
+    {
+        Node ball;
+        ball.kind = NodeKind::Struct;
+        ball.name = "aBall";
+        ball.structTypeName = "Ball";
+        ball.collapsed = true;
+        ball.parentId = 0;
+        ball.offset = 0;
+        int bli = doc->tree.addNode(ball);
+        uint64_t ballId = doc->tree.nodes[bli].id;
+
+        { Node n; n.kind = NodeKind::Vec4;   n.name = "position"; n.parentId = ballId; n.offset = 0;  doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Vec3;   n.name = "velocity"; n.parentId = ballId; n.offset = 16; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "speed";    n.parentId = ballId; n.offset = 28; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "color";    n.parentId = ballId; n.offset = 32; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "radius";   n.parentId = ballId; n.offset = 36; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Double; n.name = "mass";     n.parentId = ballId; n.offset = 40; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Bool;   n.name = "bouncy";   n.parentId = ballId; n.offset = 48; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;   n.name = "field_31"; n.parentId = ballId; n.offset = 49; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;  n.name = "field_32"; n.parentId = ballId; n.offset = 50; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "bounceCount"; n.parentId = ballId; n.offset = 52; doc->tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "field_38"; n.parentId = ballId; n.offset = 56; doc->tree.addNode(n); }
     }
 
     createTab(doc);
@@ -443,35 +529,15 @@ void MainWindow::selfTest() {
 }
 
 void MainWindow::openFile() {
-    QString path = QFileDialog::getOpenFileName(this,
-        "Open Definition", {}, "ReclassX (*.rcx);;JSON (*.json);;All (*)");
-    if (path.isEmpty()) return;
-
-    auto* doc = new RcxDocument(this);
-    if (!doc->load(path)) {
-        QMessageBox::warning(this, "Error", "Failed to load: " + path);
-        delete doc;
-        return;
-    }
-    createTab(doc);
+    project_open();
 }
 
 void MainWindow::saveFile() {
-    auto* tab = activeTab();
-    if (!tab) return;
-    if (tab->doc->filePath.isEmpty()) { saveFileAs(); return; }
-    tab->doc->save(tab->doc->filePath);
-    updateWindowTitle();
+    project_save(nullptr, false);
 }
 
 void MainWindow::saveFileAs() {
-    auto* tab = activeTab();
-    if (!tab) return;
-    QString path = QFileDialog::getSaveFileName(this,
-        "Save Definition", {}, "ReclassX (*.rcx);;JSON (*.json)");
-    if (path.isEmpty()) return;
-    tab->doc->save(path);
-    updateWindowTitle();
+    project_save(nullptr, true);
 }
 
 void MainWindow::loadBinary() {
@@ -576,12 +642,12 @@ void MainWindow::about() {
 void MainWindow::setEditorFont(const QString& fontName) {
     QSettings settings("ReclassX", "ReclassX");
     settings.setValue("font", fontName);
+    QFont f(fontName, 12);
+    f.setFixedPitch(true);
     for (auto& state : m_tabs) {
         state.ctrl->setEditorFont(fontName);
         // Also update the rendered view font
         if (state.rendered) {
-            QFont f(fontName, 12);
-            f.setFixedPitch(true);
             state.rendered->setFont(f);
             if (auto* lex = state.rendered->lexer()) {
                 lex->setFont(f);
@@ -591,6 +657,9 @@ void MainWindow::setEditorFont(const QString& fontName) {
             state.rendered->setMarginsFont(f);
         }
     }
+    // Sync workspace tree font
+    if (m_workspaceTree)
+        m_workspaceTree->setFont(f);
 }
 
 RcxController* MainWindow::activeController() const {
@@ -732,11 +801,13 @@ void MainWindow::updateRenderedView(TabState& tab) {
     }
 
     // Generate text
+    const QHash<NodeKind, QString>* aliases =
+        tab.doc->typeAliases.isEmpty() ? nullptr : &tab.doc->typeAliases;
     QString text;
     if (rootId != 0)
-        text = renderCpp(tab.doc->tree, rootId);
+        text = renderCpp(tab.doc->tree, rootId, aliases);
     else
-        text = renderCppAll(tab.doc->tree);
+        text = renderCppAll(tab.doc->tree, aliases);
 
     // Scroll restoration: save if same root, reset if different
     int restoreLine = 0;
@@ -773,7 +844,9 @@ void MainWindow::exportCpp() {
         "Export C++ Header", {}, "C++ Header (*.h);;All Files (*)");
     if (path.isEmpty()) return;
 
-    QString text = renderCppAll(tab->doc->tree);
+    const QHash<NodeKind, QString>* aliases =
+        tab->doc->typeAliases.isEmpty() ? nullptr : &tab->doc->typeAliases;
+    QString text = renderCppAll(tab->doc->tree, aliases);
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, "Export Failed",
@@ -782,6 +855,222 @@ void MainWindow::exportCpp() {
     }
     file.write(text.toUtf8());
     m_statusLabel->setText("Exported to " + QFileInfo(path).fileName());
+}
+
+// ── Type Aliases Dialog ──
+
+void MainWindow::showTypeAliasesDialog() {
+    auto* tab = activeTab();
+    if (!tab) return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("Type Aliases");
+    dlg.resize(500, 400);
+
+    auto* layout = new QVBoxLayout(&dlg);
+
+    auto* table = new QTableWidget(&dlg);
+    table->setColumnCount(2);
+    table->setHorizontalHeaderLabels({"NodeKind", "Alias (C type)"});
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+
+    // Populate with all NodeKind entries
+    int rowCount = static_cast<int>(std::size(kKindMeta));
+    table->setRowCount(rowCount);
+    for (int i = 0; i < rowCount; i++) {
+        const auto& meta = kKindMeta[i];
+        auto* kindItem = new QTableWidgetItem(QString::fromLatin1(meta.name));
+        kindItem->setFlags(kindItem->flags() & ~Qt::ItemIsEditable);
+        table->setItem(i, 0, kindItem);
+
+        QString alias = tab->doc->typeAliases.value(meta.kind);
+        table->setItem(i, 1, new QTableWidgetItem(alias));
+    }
+
+    layout->addWidget(table);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    layout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    // Collect new aliases
+    QHash<NodeKind, QString> newAliases;
+    for (int i = 0; i < rowCount; i++) {
+        QString val = table->item(i, 1)->text().trimmed();
+        if (!val.isEmpty())
+            newAliases[kKindMeta[i].kind] = val;
+    }
+
+    tab->doc->typeAliases = newAliases;
+    tab->doc->modified = true;
+    tab->ctrl->refresh();
+    updateWindowTitle();
+}
+
+// ── Project Lifecycle API ──
+
+QMdiSubWindow* MainWindow::project_new() {
+    auto* doc = new RcxDocument(this);
+
+    QByteArray data(16, '\0');
+    doc->loadData(data);
+    doc->tree.baseAddress = 0x00400000;
+
+    Node root;
+    root.kind = NodeKind::Struct;
+    root.name = "Entity";
+    root.structTypeName = "Entity";
+    root.parentId = 0;
+    root.offset = 0;
+    int ri = doc->tree.addNode(root);
+    uint64_t rootId = doc->tree.nodes[ri].id;
+
+    { Node n; n.kind = NodeKind::Int32; n.name = "health"; n.parentId = rootId; n.offset = 0;  doc->tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Int32; n.name = "armor";  n.parentId = rootId; n.offset = 4;  doc->tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Float; n.name = "speed";  n.parentId = rootId; n.offset = 8;  doc->tree.addNode(n); }
+    { Node n; n.kind = NodeKind::Hex32; n.name = "flags";  n.parentId = rootId; n.offset = 12; doc->tree.addNode(n); }
+
+    auto* sub = createTab(doc);
+    rebuildWorkspaceModel();
+    return sub;
+}
+
+QMdiSubWindow* MainWindow::project_open(const QString& path) {
+    QString filePath = path;
+    if (filePath.isEmpty()) {
+        filePath = QFileDialog::getOpenFileName(this,
+            "Open Definition", {}, "ReclassX (*.rcx);;JSON (*.json);;All (*)");
+        if (filePath.isEmpty()) return nullptr;
+    }
+
+    auto* doc = new RcxDocument(this);
+    if (!doc->load(filePath)) {
+        QMessageBox::warning(this, "Error", "Failed to load: " + filePath);
+        delete doc;
+        return nullptr;
+    }
+    auto* sub = createTab(doc);
+    rebuildWorkspaceModel();
+    return sub;
+}
+
+bool MainWindow::project_save(QMdiSubWindow* sub, bool saveAs) {
+    if (!sub) sub = m_mdiArea->activeSubWindow();
+    if (!sub || !m_tabs.contains(sub)) return false;
+    auto& tab = m_tabs[sub];
+
+    if (saveAs || tab.doc->filePath.isEmpty()) {
+        QString path = QFileDialog::getSaveFileName(this,
+            "Save Definition", {}, "ReclassX (*.rcx);;JSON (*.json)");
+        if (path.isEmpty()) return false;
+        tab.doc->save(path);
+    } else {
+        tab.doc->save(tab.doc->filePath);
+    }
+    updateWindowTitle();
+    return true;
+}
+
+void MainWindow::project_close(QMdiSubWindow* sub) {
+    if (!sub) sub = m_mdiArea->activeSubWindow();
+    if (!sub) return;
+    sub->close();
+    rebuildWorkspaceModel();
+}
+
+// ── Workspace Dock ──
+
+void MainWindow::createWorkspaceDock() {
+    m_workspaceDock = new QDockWidget("Workspace", this);
+    m_workspaceDock->setObjectName("WorkspaceDock");
+    m_workspaceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+
+    m_workspaceTree = new QTreeView(m_workspaceDock);
+    m_workspaceModel = new QStandardItemModel(this);
+    m_workspaceModel->setHorizontalHeaderLabels({"Name"});
+    m_workspaceTree->setModel(m_workspaceModel);
+    m_workspaceTree->setHeaderHidden(true);
+    m_workspaceTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    // Match editor font
+    {
+        QSettings settings("ReclassX", "ReclassX");
+        QString fontName = settings.value("font", "Consolas").toString();
+        QFont f(fontName, 12);
+        f.setFixedPitch(true);
+        m_workspaceTree->setFont(f);
+    }
+
+    m_workspaceDock->setWidget(m_workspaceTree);
+    addDockWidget(Qt::LeftDockWidgetArea, m_workspaceDock);
+
+    connect(m_workspaceTree, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
+        // Data roles: UserRole=QMdiSubWindow*, UserRole+1=structId, UserRole+2=nodeId
+        auto subVar = index.data(Qt::UserRole);
+        if (!subVar.isValid()) return;
+
+        auto* sub = static_cast<QMdiSubWindow*>(subVar.value<void*>());
+        if (!sub || !m_tabs.contains(sub)) return;
+
+        m_mdiArea->setActiveSubWindow(sub);
+
+        auto structIdVar = index.data(Qt::UserRole + 1);
+        auto nodeIdVar   = index.data(Qt::UserRole + 2);
+
+        if (structIdVar.isValid()) {
+            // Double-clicked a struct: set as view root
+            uint64_t structId = structIdVar.toULongLong();
+            auto& tree = m_tabs[sub].doc->tree;
+            int ni = tree.indexOfId(structId);
+            if (ni >= 0) tree.nodes[ni].collapsed = false;
+            m_tabs[sub].ctrl->setViewRootId(structId);
+            m_tabs[sub].ctrl->scrollToNodeId(structId);
+        } else if (nodeIdVar.isValid()) {
+            // Double-clicked a field: find its root struct, set as view root, scroll to field
+            uint64_t nodeId = nodeIdVar.toULongLong();
+            auto& tree = m_tabs[sub].doc->tree;
+            // Walk up to find root struct
+            uint64_t rootId = 0;
+            uint64_t cur = nodeId;
+            while (cur != 0) {
+                int idx = tree.indexOfId(cur);
+                if (idx < 0) break;
+                if (tree.nodes[idx].parentId == 0) { rootId = cur; break; }
+                cur = tree.nodes[idx].parentId;
+            }
+            if (rootId != 0) {
+                int ri = tree.indexOfId(rootId);
+                if (ri >= 0) tree.nodes[ri].collapsed = false;
+                m_tabs[sub].ctrl->setViewRootId(rootId);
+            }
+            m_tabs[sub].ctrl->scrollToNodeId(nodeId);
+        } else if (!index.parent().isValid()) {
+            // Double-clicked project root: clear view root to show all
+            m_tabs[sub].ctrl->setViewRootId(0);
+        }
+    });
+}
+
+void MainWindow::rebuildWorkspaceModel() {
+    m_workspaceModel->clear();
+
+    auto* sub = m_mdiArea->activeSubWindow();
+    if (!sub || !m_tabs.contains(sub)) return;
+
+    TabState& tab = m_tabs[sub];
+    QString tabName = tab.doc->filePath.isEmpty()
+        ? "Untitled" : QFileInfo(tab.doc->filePath).fileName();
+
+    buildWorkspaceModel(m_workspaceModel, tab.doc->tree, tabName,
+                        static_cast<void*>(sub));
+    m_workspaceTree->expandAll();
 }
 
 } // namespace rcx

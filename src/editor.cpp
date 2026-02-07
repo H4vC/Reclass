@@ -524,6 +524,16 @@ int RcxEditor::currentNodeIndex() const {
     return lm ? lm->nodeIdx : -1;
 }
 
+void RcxEditor::scrollToNodeId(uint64_t nodeId) {
+    for (int i = 0; i < m_meta.size(); i++) {
+        if (m_meta[i].nodeId == nodeId && m_meta[i].lineKind != LineKind::Footer) {
+            m_sci->setCursorPosition(i, 0);
+            m_sci->ensureLineVisible(i);
+            return;
+        }
+    }
+}
+
 // ── Column span computation ──
 
 ColumnSpan RcxEditor::typeSpan(const LineMeta& lm, int typeW)  { return typeSpanFor(lm, typeW); }

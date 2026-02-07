@@ -27,6 +27,7 @@ add_executable(ReclassX
     src/processpicker.ui
     src/resources.qrc
     src/core.h
+    src/workspace_model.h
     src/providers/buffer_provider.h src/providers/null_provider.h src/providers/process_provider.h src/providers/provider.h src/providers/snapshot_provider.h
 )
 
@@ -153,4 +154,13 @@ if(BUILD_TESTING)
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
         QScintilla::QScintilla dbghelp psapi)
     add_test(NAME test_context_menu COMMAND test_context_menu)
+
+    add_executable(test_new_features tests/test_new_features.cpp
+        src/generator.cpp src/compose.cpp src/format.cpp src/controller.cpp
+        src/editor.cpp src/processpicker.cpp src/processpicker.ui)
+    target_include_directories(test_new_features PRIVATE src)
+    target_link_libraries(test_new_features PRIVATE
+        Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
+        QScintilla::QScintilla dbghelp psapi)
+    add_test(NAME test_new_features COMMAND test_new_features)
 endif()

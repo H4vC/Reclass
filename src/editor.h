@@ -28,6 +28,7 @@ public:
     QsciScintilla* scintilla() const { return m_sci; }
     const LineMeta* metaForLine(int line) const;
     int currentNodeIndex() const;
+    void scrollToNodeId(uint64_t nodeId);
 
     // ── Column span computation ──
     static ColumnSpan typeSpan(const LineMeta& lm, int typeW = kColType);

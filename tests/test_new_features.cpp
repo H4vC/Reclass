@@ -1,0 +1,716 @@
+#include <QtTest/QTest>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTemporaryFile>
+#include <QStandardItemModel>
+#include "core.h"
+#include "generator.h"
+#include "controller.h"
+#include "workspace_model.h"
+
+using namespace rcx;
+
+class TestNewFeatures : public QObject {
+    Q_OBJECT
+
+private:
+    NodeTree makeSimpleTree() {
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Player";
+        root.structTypeName = "Player";
+        root.parentId = 0;
+        root.offset = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node f1;
+        f1.kind = NodeKind::Int32;
+        f1.name = "health";
+        f1.parentId = rootId;
+        f1.offset = 0;
+        tree.addNode(f1);
+
+        Node f2;
+        f2.kind = NodeKind::Float;
+        f2.name = "speed";
+        f2.parentId = rootId;
+        f2.offset = 4;
+        tree.addNode(f2);
+
+        return tree;
+    }
+
+    NodeTree makeTwoRootTree() {
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        // Root struct A
+        Node a;
+        a.kind = NodeKind::Struct;
+        a.name = "Alpha";
+        a.structTypeName = "Alpha";
+        a.parentId = 0;
+        a.offset = 0;
+        int ai = tree.addNode(a);
+        uint64_t aId = tree.nodes[ai].id;
+
+        Node af;
+        af.kind = NodeKind::UInt32;
+        af.name = "flagsA";
+        af.parentId = aId;
+        af.offset = 0;
+        tree.addNode(af);
+
+        // Root struct B
+        Node b;
+        b.kind = NodeKind::Struct;
+        b.name = "Bravo";
+        b.structTypeName = "Bravo";
+        b.parentId = 0;
+        b.offset = 0x100;
+        int bi = tree.addNode(b);
+        uint64_t bId = tree.nodes[bi].id;
+
+        Node bf;
+        bf.kind = NodeKind::UInt64;
+        bf.name = "flagsB";
+        bf.parentId = bId;
+        bf.offset = 0;
+        tree.addNode(bf);
+
+        return tree;
+    }
+
+    NodeTree makeRichTree() {
+        NodeTree tree;
+        tree.baseAddress = 0x00400000;
+
+        // ── Pet (root struct) ──
+        Node pet;
+        pet.kind = NodeKind::Struct;
+        pet.name = "Pet";
+        pet.structTypeName = "Pet";
+        pet.parentId = 0;
+        pet.offset = 0;
+        int pi = tree.addNode(pet);
+        uint64_t petId = tree.nodes[pi].id;
+
+        { Node n; n.kind = NodeKind::Hex8;      n.name = "hex_00"; n.parentId = petId; n.offset = 0;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;      n.name = "hex_01"; n.parentId = petId; n.offset = 1;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = petId; n.offset = 2;  n.strLen = 32; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex16;     n.name = "hex_22"; n.parentId = petId; n.offset = 34; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;     n.name = "hex_24"; n.parentId = petId; n.offset = 36; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = petId; n.offset = 40; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_30"; n.parentId = petId; n.offset = 48; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;     n.name = "hex_38"; n.parentId = petId; n.offset = 56; tree.addNode(n); }
+
+        // ── Cat (root struct, "inherits" Pet via nested struct) ──
+        Node cat;
+        cat.kind = NodeKind::Struct;
+        cat.name = "Cat";
+        cat.structTypeName = "Cat";
+        cat.parentId = 0;
+        cat.offset = 0;
+        int ci = tree.addNode(cat);
+        uint64_t catId = tree.nodes[ci].id;
+
+        // base = embedded Pet (nested struct child at offset 0)
+        Node base;
+        base.kind = NodeKind::Struct;
+        base.name = "base";
+        base.structTypeName = "Pet";
+        base.parentId = catId;
+        base.offset = 0;
+        int bi = tree.addNode(base);
+        uint64_t baseId = tree.nodes[bi].id;
+
+        // Children inside the nested Pet base
+        { Node n; n.kind = NodeKind::UTF8;      n.name = "name";   n.parentId = baseId; n.offset = 0;  n.strLen = 32; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Pointer64; n.name = "owner";  n.parentId = baseId; n.offset = 32; tree.addNode(n); }
+
+        // Cat's own fields after base
+        { Node n; n.kind = NodeKind::Hex64; n.name = "hex_40";     n.parentId = catId; n.offset = 64; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float; n.name = "whiskerLen"; n.parentId = catId; n.offset = 72; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32; n.name = "hex_4C";     n.parentId = catId; n.offset = 76; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt8; n.name = "lives";      n.parentId = catId; n.offset = 80; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex8;  n.name = "hex_51";     n.parentId = catId; n.offset = 81; tree.addNode(n); }
+
+        // ── Ball (independent root struct) ──
+        Node ball;
+        ball.kind = NodeKind::Struct;
+        ball.name = "Ball";
+        ball.structTypeName = "Ball";
+        ball.parentId = 0;
+        ball.offset = 0;
+        int bli = tree.addNode(ball);
+        uint64_t ballId = tree.nodes[bli].id;
+
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "hex_00";   n.parentId = ballId; n.offset = 0;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Float;  n.name = "speed";    n.parentId = ballId; n.offset = 4;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_08";   n.parentId = ballId; n.offset = 8;  tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Vec4;   n.name = "position"; n.parentId = ballId; n.offset = 16; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::UInt32; n.name = "color";    n.parentId = ballId; n.offset = 32; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex32;  n.name = "hex_24";   n.parentId = ballId; n.offset = 36; tree.addNode(n); }
+        { Node n; n.kind = NodeKind::Hex64;  n.name = "hex_28";   n.parentId = ballId; n.offset = 40; tree.addNode(n); }
+
+        return tree;
+    }
+
+private slots:
+
+    // ═══════════════════════════════════════════════════
+    // Feature 1: Type Aliases
+    // ═══════════════════════════════════════════════════
+
+    void testResolveTypeName_noAlias() {
+        RcxDocument doc;
+        // No aliases set — should return default type name
+        QString name = doc.resolveTypeName(NodeKind::Int32);
+        QCOMPARE(name, QString("int32_t"));
+
+        name = doc.resolveTypeName(NodeKind::Float);
+        QCOMPARE(name, QString("float"));
+
+        name = doc.resolveTypeName(NodeKind::Hex64);
+        QCOMPARE(name, QString("Hex64"));
+    }
+
+    void testResolveTypeName_withAlias() {
+        RcxDocument doc;
+        doc.typeAliases[NodeKind::Int32] = "DWORD";
+        doc.typeAliases[NodeKind::Float] = "FLOAT";
+
+        QCOMPARE(doc.resolveTypeName(NodeKind::Int32), QString("DWORD"));
+        QCOMPARE(doc.resolveTypeName(NodeKind::Float), QString("FLOAT"));
+        // Non-aliased types still return default
+        QCOMPARE(doc.resolveTypeName(NodeKind::UInt64), QString("uint64_t"));
+    }
+
+    void testResolveTypeName_emptyAlias() {
+        RcxDocument doc;
+        doc.typeAliases[NodeKind::Int32] = "";  // empty alias should be ignored
+        QCOMPARE(doc.resolveTypeName(NodeKind::Int32), QString("int32_t"));
+    }
+
+    void testTypeAliases_saveLoad() {
+        // Save a document with type aliases, reload, verify aliases persist
+        QTemporaryFile tmpFile;
+        tmpFile.setAutoRemove(true);
+        QVERIFY(tmpFile.open());
+        QString path = tmpFile.fileName();
+        tmpFile.close();
+
+        // Create document with aliases and save
+        {
+            RcxDocument doc;
+            doc.tree = makeSimpleTree();
+            doc.typeAliases[NodeKind::Int32] = "DWORD";
+            doc.typeAliases[NodeKind::Float] = "FLOAT";
+            QVERIFY(doc.save(path));
+        }
+
+        // Reload and check aliases
+        {
+            RcxDocument doc;
+            QVERIFY(doc.load(path));
+            QCOMPARE(doc.typeAliases.size(), 2);
+            QCOMPARE(doc.typeAliases.value(NodeKind::Int32), QString("DWORD"));
+            QCOMPARE(doc.typeAliases.value(NodeKind::Float), QString("FLOAT"));
+        }
+    }
+
+    void testTypeAliases_saveLoadEmpty() {
+        // Save without aliases, reload, verify no aliases
+        QTemporaryFile tmpFile;
+        tmpFile.setAutoRemove(true);
+        QVERIFY(tmpFile.open());
+        QString path = tmpFile.fileName();
+        tmpFile.close();
+
+        {
+            RcxDocument doc;
+            doc.tree = makeSimpleTree();
+            QVERIFY(doc.save(path));
+        }
+
+        {
+            RcxDocument doc;
+            QVERIFY(doc.load(path));
+            QVERIFY(doc.typeAliases.isEmpty());
+        }
+    }
+
+    void testTypeAliases_jsonFormat() {
+        // Verify the JSON format of saved aliases
+        QTemporaryFile tmpFile;
+        tmpFile.setAutoRemove(true);
+        QVERIFY(tmpFile.open());
+        QString path = tmpFile.fileName();
+        tmpFile.close();
+
+        RcxDocument doc;
+        doc.tree = makeSimpleTree();
+        doc.typeAliases[NodeKind::UInt32] = "UINT";
+        QVERIFY(doc.save(path));
+
+        // Read raw JSON
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QJsonDocument jdoc = QJsonDocument::fromJson(file.readAll());
+        QJsonObject root = jdoc.object();
+
+        QVERIFY(root.contains("typeAliases"));
+        QJsonObject aliases = root["typeAliases"].toObject();
+        QCOMPARE(aliases["UInt32"].toString(), QString("UINT"));
+    }
+
+    void testGenerator_typeAliases() {
+        // Generator should use aliases for field types
+        auto tree = makeSimpleTree();
+        uint64_t rootId = tree.nodes[0].id;
+
+        QHash<NodeKind, QString> aliases;
+        aliases[NodeKind::Int32] = "LONG";
+        aliases[NodeKind::Float] = "FLOAT";
+
+        QString result = renderCpp(tree, rootId, &aliases);
+
+        QVERIFY(result.contains("LONG health;"));
+        QVERIFY(result.contains("FLOAT speed;"));
+        // struct keyword itself should not be aliased
+        QVERIFY(result.contains("struct Player {"));
+    }
+
+    void testGenerator_typeAliases_null() {
+        // With nullptr aliases, should behave like before
+        auto tree = makeSimpleTree();
+        uint64_t rootId = tree.nodes[0].id;
+
+        QString result = renderCpp(tree, rootId, nullptr);
+        QVERIFY(result.contains("int32_t health;"));
+        QVERIFY(result.contains("float speed;"));
+    }
+
+    void testGenerator_typeAliases_padding() {
+        // Padding gap and tail padding should use aliased uint8_t
+        NodeTree tree;
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "PadTest";
+        root.structTypeName = "PadTest";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node f1;
+        f1.kind = NodeKind::UInt32;
+        f1.name = "a";
+        f1.parentId = rootId;
+        f1.offset = 0;
+        tree.addNode(f1);
+
+        Node f2;
+        f2.kind = NodeKind::UInt32;
+        f2.name = "b";
+        f2.parentId = rootId;
+        f2.offset = 8;  // gap of 4 bytes at offset 4
+        tree.addNode(f2);
+
+        QHash<NodeKind, QString> aliases;
+        aliases[NodeKind::Padding] = "BYTE";
+
+        QString result = renderCpp(tree, rootId, &aliases);
+        // Padding gap should use the alias
+        QVERIFY(result.contains("BYTE _pad"));
+    }
+
+    void testGenerator_typeAliases_array() {
+        // Array element type should use alias
+        NodeTree tree;
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "ArrTest";
+        root.structTypeName = "ArrTest";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node arr;
+        arr.kind = NodeKind::Array;
+        arr.name = "data";
+        arr.parentId = rootId;
+        arr.offset = 0;
+        arr.arrayLen = 16;
+        arr.elementKind = NodeKind::UInt32;
+        tree.addNode(arr);
+
+        QHash<NodeKind, QString> aliases;
+        aliases[NodeKind::UInt32] = "DWORD";
+
+        QString result = renderCpp(tree, rootId, &aliases);
+        QVERIFY(result.contains("DWORD data[16];"));
+    }
+
+    void testGenerator_renderCppAll_typeAliases() {
+        auto tree = makeTwoRootTree();
+
+        QHash<NodeKind, QString> aliases;
+        aliases[NodeKind::UInt32] = "DWORD";
+        aliases[NodeKind::UInt64] = "QWORD";
+
+        QString result = renderCppAll(tree, &aliases);
+        QVERIFY(result.contains("DWORD flagsA;"));
+        QVERIFY(result.contains("QWORD flagsB;"));
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Feature 3: Per-Window View Root Class
+    // ═══════════════════════════════════════════════════
+
+    void testCompose_viewRootId_zero() {
+        // viewRootId=0 should show all roots (same as default)
+        auto tree = makeTwoRootTree();
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov, 0);
+
+        // Should have content from both structs
+        QStringList lines = result.text.split('\n');
+        bool foundFlagsA = false, foundFlagsB = false;
+        for (const QString& l : lines) {
+            if (l.contains("flagsA")) foundFlagsA = true;
+            if (l.contains("flagsB")) foundFlagsB = true;
+        }
+        QVERIFY2(foundFlagsA, "viewRootId=0 should include Alpha struct");
+        QVERIFY2(foundFlagsB, "viewRootId=0 should include Bravo struct");
+    }
+
+    void testCompose_viewRootId_filter() {
+        // viewRootId set to Alpha's id should only show Alpha's fields
+        auto tree = makeTwoRootTree();
+        uint64_t alphaId = tree.nodes[0].id;
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov, alphaId);
+
+        QStringList lines = result.text.split('\n');
+        bool foundFlagsA = false, foundFlagsB = false;
+        for (const QString& l : lines) {
+            if (l.contains("flagsA")) foundFlagsA = true;
+            if (l.contains("flagsB")) foundFlagsB = true;
+        }
+        QVERIFY2(foundFlagsA, "viewRootId=Alpha should include Alpha's fields");
+        QVERIFY2(!foundFlagsB, "viewRootId=Alpha should NOT include Bravo's fields");
+    }
+
+    void testCompose_viewRootId_otherRoot() {
+        // viewRootId set to Bravo's id should only show Bravo's fields
+        auto tree = makeTwoRootTree();
+        uint64_t bravoId = tree.nodes[2].id;  // Bravo is the 3rd node (index 2)
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov, bravoId);
+
+        QStringList lines = result.text.split('\n');
+        bool foundFlagsA = false, foundFlagsB = false;
+        for (const QString& l : lines) {
+            if (l.contains("flagsA")) foundFlagsA = true;
+            if (l.contains("flagsB")) foundFlagsB = true;
+        }
+        QVERIFY2(!foundFlagsA, "viewRootId=Bravo should NOT include Alpha's fields");
+        QVERIFY2(foundFlagsB, "viewRootId=Bravo should include Bravo's fields");
+    }
+
+    void testCompose_viewRootId_invalid() {
+        // viewRootId pointing to non-existent node: should show nothing (only command rows)
+        auto tree = makeTwoRootTree();
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov, 99999);
+
+        // Only command rows
+        QCOMPARE(result.meta.size(), 2);
+        QCOMPARE(result.meta[0].lineKind, LineKind::CommandRow);
+        QCOMPARE(result.meta[1].lineKind, LineKind::CommandRow2);
+    }
+
+    void testCompose_viewRootId_singleRoot() {
+        // Single root tree with viewRootId set to that root — should work normally
+        auto tree = makeSimpleTree();
+        uint64_t rootId = tree.nodes[0].id;
+
+        NullProvider prov;
+        ComposeResult full = compose(tree, prov, 0);
+        ComposeResult filtered = compose(tree, prov, rootId);
+
+        // Both should have same number of lines (only one root anyway)
+        QCOMPARE(full.meta.size(), filtered.meta.size());
+    }
+
+    void testDocument_compose_viewRootId() {
+        // Test RcxDocument::compose passes viewRootId through
+        RcxDocument doc;
+        doc.tree = makeTwoRootTree();
+        uint64_t alphaId = doc.tree.nodes[0].id;
+
+        ComposeResult fullResult = doc.compose(0);
+        ComposeResult filtered = doc.compose(alphaId);
+
+        // Filtered should have fewer lines than full
+        QVERIFY(filtered.meta.size() < fullResult.meta.size());
+
+        // Filtered should have Alpha's fields
+        bool foundFlagsA = false;
+        for (const QString& l : filtered.text.split('\n')) {
+            if (l.contains("flagsA")) foundFlagsA = true;
+        }
+        QVERIFY(foundFlagsA);
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Feature 2: Project Lifecycle API (document-level)
+    // ═══════════════════════════════════════════════════
+
+    void testDocument_saveLoadPreservesData() {
+        // Verify save/load round-trip preserves tree + aliases + baseAddress
+        QTemporaryFile tmpFile;
+        tmpFile.setAutoRemove(true);
+        QVERIFY(tmpFile.open());
+        QString path = tmpFile.fileName();
+        tmpFile.close();
+
+        {
+            RcxDocument doc;
+            doc.tree = makeTwoRootTree();
+            doc.tree.baseAddress = 0xDEADBEEF;
+            doc.typeAliases[NodeKind::Int32] = "INT";
+            QVERIFY(doc.save(path));
+        }
+
+        {
+            RcxDocument doc;
+            QVERIFY(doc.load(path));
+            QCOMPARE(doc.tree.baseAddress, (uint64_t)0xDEADBEEF);
+            QCOMPARE(doc.tree.nodes.size(), 4);  // 2 roots + 2 fields
+            QCOMPARE(doc.typeAliases.value(NodeKind::Int32), QString("INT"));
+            QCOMPARE(doc.filePath, path);
+            QVERIFY(!doc.modified);
+        }
+    }
+
+    void testDocument_saveCreatesFile() {
+        QTemporaryFile tmpFile;
+        tmpFile.setAutoRemove(true);
+        QVERIFY(tmpFile.open());
+        QString path = tmpFile.fileName();
+        tmpFile.close();
+
+        RcxDocument doc;
+        doc.tree = makeSimpleTree();
+        QVERIFY(doc.save(path));
+        QCOMPARE(doc.filePath, path);
+        QVERIFY(!doc.modified);
+
+        // Verify file exists and is valid JSON
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QJsonDocument jdoc = QJsonDocument::fromJson(file.readAll());
+        QVERIFY(!jdoc.isNull());
+        QVERIFY(jdoc.object().contains("nodes"));
+    }
+
+    void testDocument_loadInvalidPath() {
+        RcxDocument doc;
+        QVERIFY(!doc.load("/nonexistent/path/file.rcx"));
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Integration: Type aliases + compose + generator
+    // ═══════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════
+    // Feature 4: Workspace Model
+    // ═══════════════════════════════════════════════════
+
+    void testWorkspace_simpleTree() {
+        auto tree = makeSimpleTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "TestProject.rcx");
+
+        // 1 top-level item (the project)
+        QCOMPARE(model.rowCount(), 1);
+        QStandardItem* project = model.item(0);
+        QCOMPARE(project->text(), QString("TestProject.rcx"));
+
+        // Project has 1 child: the Player struct
+        QCOMPARE(project->rowCount(), 1);
+        QStandardItem* player = project->child(0);
+        QVERIFY(player->text().contains("Player"));
+        QVERIFY(player->text().contains("struct"));
+
+        // Player struct has 2 children: health, speed
+        QCOMPARE(player->rowCount(), 2);
+        QVERIFY(player->child(0)->text().contains("health"));
+        QVERIFY(player->child(1)->text().contains("speed"));
+    }
+
+    void testWorkspace_twoRootTree() {
+        auto tree = makeTwoRootTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "TwoRoot.rcx");
+
+        QCOMPARE(model.rowCount(), 1);
+        QStandardItem* project = model.item(0);
+
+        // 2 root struct children: Alpha and Bravo
+        QCOMPARE(project->rowCount(), 2);
+        QVERIFY(project->child(0)->text().contains("Alpha"));
+        QVERIFY(project->child(1)->text().contains("Bravo"));
+
+        // Each has 1 field child
+        QCOMPARE(project->child(0)->rowCount(), 1);
+        QVERIFY(project->child(0)->child(0)->text().contains("flagsA"));
+        QCOMPARE(project->child(1)->rowCount(), 1);
+        QVERIFY(project->child(1)->child(0)->text().contains("flagsB"));
+    }
+
+    void testWorkspace_richTree_rootCount() {
+        auto tree = makeRichTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "Rich.rcx");
+
+        QStandardItem* project = model.item(0);
+        QCOMPARE(project->rowCount(), 3);  // Pet, Cat, Ball
+    }
+
+    void testWorkspace_richTree_petChildren() {
+        auto tree = makeRichTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "Rich.rcx");
+
+        QStandardItem* pet = model.item(0)->child(0);
+        QVERIFY(pet->text().contains("Pet"));
+        // Pet has 2 non-hex children: name (UTF8), owner (Pointer64)
+        QCOMPARE(pet->rowCount(), 2);
+        QVERIFY(pet->child(0)->text().contains("name"));
+        QVERIFY(pet->child(1)->text().contains("owner"));
+    }
+
+    void testWorkspace_richTree_catNesting() {
+        auto tree = makeRichTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "Rich.rcx");
+
+        QStandardItem* cat = model.item(0)->child(1);
+        QVERIFY(cat->text().contains("Cat"));
+
+        // Find the nested "Pet" struct child (base)
+        QStandardItem* base = nullptr;
+        for (int i = 0; i < cat->rowCount(); i++) {
+            if (cat->child(i)->text().contains("Pet") &&
+                cat->child(i)->text().contains("struct")) {
+                base = cat->child(i);
+                break;
+            }
+        }
+        QVERIFY2(base != nullptr, "Cat should have a nested Pet struct child");
+
+        // base has structId set
+        QVERIFY(base->data(Qt::UserRole + 1).isValid());
+
+        // base should have its own children (name + owner)
+        QCOMPARE(base->rowCount(), 2);
+    }
+
+    void testWorkspace_richTree_ballChildren() {
+        auto tree = makeRichTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "Rich.rcx");
+
+        QStandardItem* ball = model.item(0)->child(2);
+        QVERIFY(ball->text().contains("Ball"));
+
+        // Ball has 3 non-hex children: speed, position, color
+        QCOMPARE(ball->rowCount(), 3);
+        QVERIFY(ball->child(0)->text().contains("speed"));
+        QVERIFY(ball->child(1)->text().contains("position"));
+        QVERIFY(ball->child(2)->text().contains("color"));
+    }
+
+    void testWorkspace_emptyTree() {
+        NodeTree tree;
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "Empty.rcx");
+
+        QCOMPARE(model.rowCount(), 1);
+        QCOMPARE(model.item(0)->rowCount(), 0);
+    }
+
+    void testWorkspace_structIdRole() {
+        auto tree = makeSimpleTree();
+        QStandardItemModel model;
+        buildWorkspaceModel(&model, tree, "Test.rcx");
+
+        QStandardItem* project = model.item(0);
+        // Project item should NOT have structId
+        QVERIFY(!project->data(Qt::UserRole + 1).isValid());
+
+        // Player struct should have structId
+        QStandardItem* player = project->child(0);
+        QVERIFY(player->data(Qt::UserRole + 1).isValid());
+        QVERIFY(player->data(Qt::UserRole + 1).toULongLong() > 0);
+
+        // health field should NOT have structId
+        QStandardItem* health = player->child(0);
+        QVERIFY(!health->data(Qt::UserRole + 1).isValid());
+    }
+
+    // ═══════════════════════════════════════════════════
+    // Integration: Type aliases + compose + generator
+    // ═══════════════════════════════════════════════════
+
+    void testAliasesPreservedThroughSaveReloadCompose() {
+        // Full workflow: set aliases, save, reload, compose + generate
+        QTemporaryFile tmpFile;
+        tmpFile.setAutoRemove(true);
+        QVERIFY(tmpFile.open());
+        QString path = tmpFile.fileName();
+        tmpFile.close();
+
+        auto tree = makeSimpleTree();
+
+        // Save with aliases
+        {
+            RcxDocument doc;
+            doc.tree = tree;
+            doc.typeAliases[NodeKind::Int32] = "my_int32";
+            doc.typeAliases[NodeKind::Float] = "my_float";
+            QVERIFY(doc.save(path));
+        }
+
+        // Reload and verify compose + generate work
+        {
+            RcxDocument doc;
+            QVERIFY(doc.load(path));
+
+            // Compose should succeed
+            ComposeResult result = doc.compose();
+            QVERIFY(result.meta.size() > 0);
+
+            // Generator should use aliases
+            uint64_t rootId = doc.tree.nodes[0].id;
+            const QHash<NodeKind, QString>* aliases =
+                doc.typeAliases.isEmpty() ? nullptr : &doc.typeAliases;
+            QString cpp = renderCpp(doc.tree, rootId, aliases);
+            QVERIFY(cpp.contains("my_int32 health;"));
+            QVERIFY(cpp.contains("my_float speed;"));
+        }
+    }
+};
+
+QTEST_MAIN(TestNewFeatures)
+#include "test_new_features.moc"
