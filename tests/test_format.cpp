@@ -222,21 +222,21 @@ private slots:
     }
 
     void testReadValueBoundsCheck() {
-        // Vec2 subLine=2 (out of bounds) should return "?"
+        // Vec2 single-line: subLine=0 returns all components
         QByteArray data(16, '\0');
         BufferProvider prov(data);
         Node n;
         n.kind = NodeKind::Vec2;
         n.name = "v";
-        QCOMPARE(fmt::readValue(n, prov, 0, 2), QString("?"));
-        QCOMPARE(fmt::readValue(n, prov, 0, -1), QString("?"));
+        QVERIFY(fmt::readValue(n, prov, 0, 0).contains(","));
 
-        // Vec3 subLine=3 (out of bounds)
+        // Vec3 single-line: subLine=0 returns 3 comma-separated values
         n.kind = NodeKind::Vec3;
-        QCOMPARE(fmt::readValue(n, prov, 0, 3), QString("?"));
+        QCOMPARE(fmt::readValue(n, prov, 0, 0).count(','), 2);
 
-        // Vec3 subLine=2 (valid)
-        QVERIFY(fmt::readValue(n, prov, 0, 2) != QString("?"));
+        // Vec4 single-line: subLine=0 returns 4 comma-separated values
+        n.kind = NodeKind::Vec4;
+        QCOMPARE(fmt::readValue(n, prov, 0, 0).count(','), 3);
     }
 
     void testEditableValueBasic() {
@@ -252,9 +252,10 @@ private slots:
         QString s = fmt::editableValue(n, prov, 0, 0);
         QVERIFY(s.contains("3.14"));
 
-        // Vec2 out of bounds → "?"
+        // Vec2 single-line: returns comma-separated values
         n.kind = NodeKind::Vec2;
-        QCOMPARE(fmt::editableValue(n, prov, 0, 2), QString("?"));
+        QString vec2 = fmt::editableValue(n, prov, 0, 0);
+        QVERIFY(vec2.contains(","));
     }
 
     void testParseValueEmptyString() {

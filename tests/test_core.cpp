@@ -18,9 +18,9 @@ private slots:
 
     void testLinesForKind() {
         QCOMPARE(rcx::linesForKind(rcx::NodeKind::Hex32), 1);
-        QCOMPARE(rcx::linesForKind(rcx::NodeKind::Vec2),  2);
-        QCOMPARE(rcx::linesForKind(rcx::NodeKind::Vec3),  3);
-        QCOMPARE(rcx::linesForKind(rcx::NodeKind::Vec4),  4);
+        QCOMPARE(rcx::linesForKind(rcx::NodeKind::Vec2),  1);
+        QCOMPARE(rcx::linesForKind(rcx::NodeKind::Vec3),  1);
+        QCOMPARE(rcx::linesForKind(rcx::NodeKind::Vec4),  1);
         QCOMPARE(rcx::linesForKind(rcx::NodeKind::Mat4x4), 4);
     }
 

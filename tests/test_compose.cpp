@@ -58,7 +58,7 @@ private slots:
         QCOMPARE(result.meta[4].lineKind, LineKind::Footer);
     }
 
-    void testVec3Continuation() {
+    void testVec3SingleLine() {
         NodeTree tree;
         tree.baseAddress = 0;
 
@@ -79,28 +79,17 @@ private slots:
         NullProvider prov;
         ComposeResult result = compose(tree, prov);
 
-        // CommandRow + CommandRow2 + 3 Vec3 lines + root footer = 6
-        QCOMPARE(result.meta.size(), 6);
+        // CommandRow + CommandRow2 + 1 Vec3 line + root footer = 4
+        QCOMPARE(result.meta.size(), 4);
 
-        // Line 2 (first Vec3 component): not continuation, depth 1
+        // Line 2: single Vec3 line, not continuation, depth 1
         QVERIFY(!result.meta[2].isContinuation);
         QCOMPARE(result.meta[2].offsetText, QString("0"));
         QCOMPARE(result.meta[2].depth, 1);
+        QCOMPARE(result.meta[2].nodeKind, NodeKind::Vec3);
 
-        // Lines 3-4: continuation, depth 1
-        QVERIFY(result.meta[3].isContinuation);
-        QCOMPARE(result.meta[3].offsetText, QString("  \u00B7"));
-        QCOMPARE(result.meta[3].depth, 1);
-        QVERIFY(result.meta[4].isContinuation);
-        QCOMPARE(result.meta[4].offsetText, QString("  \u00B7"));
-        QCOMPARE(result.meta[4].depth, 1);
-
-        // Continuation marker
-        QVERIFY(result.meta[3].markerMask & (1u << M_CONT));
-        QVERIFY(result.meta[4].markerMask & (1u << M_CONT));
-
-        // Line 5 is root footer
-        QCOMPARE(result.meta[5].lineKind, LineKind::Footer);
+        // Line 3 is root footer
+        QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
     }
 
     void testPaddingMarker() {

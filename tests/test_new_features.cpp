@@ -860,6 +860,45 @@ private slots:
             QVERIFY(cpp.contains("my_float speed;"));
         }
     }
+    void testVec4SingleLineValue() {
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Obj";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node v;
+        v.kind = NodeKind::Vec4;
+        v.name = "position";
+        v.parentId = rootId;
+        v.offset = 0;
+        tree.addNode(v);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // CommandRow + CommandRow2 + 1 Vec4 line + footer = 4
+        QCOMPARE(result.meta.size(), 4);
+
+        // The Vec4 line (index 2) is a single field line, not continuation
+        QCOMPARE(result.meta[2].lineKind, LineKind::Field);
+        QCOMPARE(result.meta[2].nodeKind, NodeKind::Vec4);
+        QVERIFY(!result.meta[2].isContinuation);
+
+        // Copy text (equivalent to editor's "Copy All as Text")
+        QString text = result.text;
+        // NullProvider reads 0 for all floats, so values are "0, 0, 0, 0"
+        QVERIFY(text.contains("0, 0, 0, 0"));
+        // Confirm type, name, and values all on the same line
+        QStringList lines = text.split('\n');
+        QVERIFY(lines[2].contains("Vec4"));
+        QVERIFY(lines[2].contains("position"));
+        QVERIFY(lines[2].contains("0, 0, 0, 0"));
+    }
 };
 
 QTEST_MAIN(TestNewFeatures)

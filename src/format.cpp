@@ -245,12 +245,11 @@ static QString readValueImpl(const Node& node, const Provider& prov,
     case NodeKind::Vec2:
     case NodeKind::Vec3:
     case NodeKind::Vec4: {
-        int maxSub = linesForKind(node.kind);
-        if (subLine < 0 || subLine >= maxSub) return QStringLiteral("?");
-        float component = prov.readF32(addr + subLine * 4);
-        if (!display) return fmtFloat(component).trimmed();
-        static const char* labels[] = {"x", "y", "z", "w"};
-        return QString(labels[subLine]) + QStringLiteral(" = ") + fmtFloat(component);
+        int count = sizeForKind(node.kind) / 4;
+        QStringList parts;
+        for (int i = 0; i < count; i++)
+            parts << fmtFloat(prov.readF32(addr + i * 4)).trimmed();
+        return parts.join(QStringLiteral(", "));
     }
     case NodeKind::Mat4x4: {
         if (!display) return {};  // not editable as single value
@@ -311,14 +310,6 @@ QString fmtNodeLine(const Node& node, const Provider& prov,
     if (node.kind == NodeKind::Mat4x4) {
         QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);
         if (subLine == 0) return ind + type + SEP + name + SEP + val + cmtSuffix;
-        return ind + QString(prefixW, ' ') + val + cmtSuffix;
-    }
-
-    // For vector types, subLine selects component
-    if (subLine > 0 && (node.kind == NodeKind::Vec2 ||
-                        node.kind == NodeKind::Vec3 ||
-                        node.kind == NodeKind::Vec4)) {
-        QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);
         return ind + QString(prefixW, ' ') + val + cmtSuffix;
     }
 
