@@ -34,11 +34,11 @@ public:
                const QModelIndex& index) const override {
         painter->save();
 
-        // Background
+        // Background: editor design language greys
         if (option.state & QStyle::State_Selected)
-            painter->fillRect(option.rect, option.palette.highlight());
+            painter->fillRect(option.rect, QColor("#232323"));   // M_SELECTED
         else if (option.state & QStyle::State_MouseOver)
-            painter->fillRect(option.rect, QColor(43, 43, 43));
+            painter->fillRect(option.rect, QColor("#2b2b2b"));   // M_HOVER
 
         int x = option.rect.x();
         int y = option.rect.y();
@@ -102,8 +102,8 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
     pal.setColor(QPalette::Text,            QColor("#d4d4d4"));
     pal.setColor(QPalette::Button,          QColor("#333333"));
     pal.setColor(QPalette::ButtonText,      QColor("#d4d4d4"));
-    pal.setColor(QPalette::Highlight,       QColor("#264f78"));
-    pal.setColor(QPalette::HighlightedText, QColor("#ffffff"));
+    pal.setColor(QPalette::Highlight,       QColor("#2b2b2b"));
+    pal.setColor(QPalette::HighlightedText, QColor("#d4d4d4"));
     setPalette(pal);
     setAutoFillBackground(true);
 

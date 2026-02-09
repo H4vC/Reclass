@@ -141,7 +141,7 @@ private slots:
     void openFile();
     void saveFile();
     void saveFileAs();
-    void loadBinary();
+
 
     void addNode();
     void removeNode();
@@ -166,7 +166,7 @@ public:
     void project_close(QMdiSubWindow* sub = nullptr);
 
 private:
-    enum ViewMode { VM_Reclass, VM_Rendered, VM_Debug };
+    enum ViewMode { VM_Reclass, VM_Rendered };
 
     QMdiArea* m_mdiArea;
     QLabel*   m_statusLabel;
@@ -189,8 +189,6 @@ private:
     };
     QMap<QMdiSubWindow*, TabState> m_tabs;
 
-    QAction* m_actViewReclass  = nullptr;
-    QAction* m_actViewRendered = nullptr;
 
     void createMenus();
     void createStatusBar();
@@ -205,7 +203,6 @@ private:
     void setViewMode(ViewMode mode);
     void updateRenderedView(TabState& tab, SplitPane& pane);
     void updateAllRenderedPanes(TabState& tab);
-    void syncRenderMenuState();
     uint64_t findRootStructForNode(const NodeTree& tree, uint64_t nodeId) const;
     void setupRenderedSci(QsciScintilla* sci);
 
@@ -231,6 +228,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_mdiArea->setViewMode(QMdiArea::TabbedView);
     m_mdiArea->setTabsClosable(true);
     m_mdiArea->setTabsMovable(true);
+    m_mdiArea->setStyleSheet(QStringLiteral(
+        "QTabBar::tab {"
+        "  background: #1e1e1e;"
+        "  color: #585858;"
+        "  padding: 6px 16px;"
+        "  border: none;"
+        "}"
+        "QTabBar::tab:selected {"
+        "  color: #d4d4d4;"
+        "  background: #252526;"
+        "}"
+        "QTabBar::tab:hover {"
+        "  color: #d4d4d4;"
+        "  background: #2b2b2b;"
+        "}"
+    ));
     setCentralWidget(m_mdiArea);
 
     createWorkspaceDock();
@@ -238,12 +251,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createStatusBar();
 
 
-    // Larger click targets + subtle hover on menu bar
+    // Larger click targets on menu bar
     {
         menuBar()->setStyle(new MenuBarStyle(menuBar()->style()));
-        QPalette mp = menuBar()->palette();
-        mp.setColor(QPalette::Highlight, QColor(43, 43, 43));
-        menuBar()->setPalette(mp);
     }
 
     // Load plugins
@@ -252,7 +262,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_mdiArea, &QMdiArea::subWindowActivated,
             this, [this](QMdiSubWindow*) {
         updateWindowTitle();
-        syncRenderMenuState();
         rebuildWorkspaceModel();
     });
 
@@ -283,8 +292,6 @@ void MainWindow::createMenus() {
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
     file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
-    file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/file-binary.svg"), "Load &Binary...", this, &MainWindow::loadBinary);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
@@ -319,9 +326,6 @@ void MainWindow::createMenus() {
     connect(actConsolas, &QAction::triggered, this, [this]() { setEditorFont("Consolas"); });
     connect(actIosevka, &QAction::triggered, this, [this]() { setEditorFont("Iosevka"); });
 
-    view->addSeparator();
-    m_actViewRendered = view->addAction(makeIcon(":/vsicons/code.svg"), "&C/C++", this, [this]() { setViewMode(VM_Rendered); });
-    m_actViewReclass  = view->addAction(makeIcon(":/vsicons/eye.svg"), "&Reclass View", this, [this]() { setViewMode(VM_Reclass); });
     view->addSeparator();
     view->addAction(m_workspaceDock->toggleViewAction());
 
@@ -374,6 +378,7 @@ void MainWindow::applyTabWidgetStyle(QTabWidget* tw) {
         "}"
         "QTabBar::tab:hover {"
         "  color: #d4d4d4;"
+        "  background: #2b2b2b;"
         "}"
     ));
     tw->tabBar()->setExpanding(false);
@@ -395,11 +400,6 @@ MainWindow::SplitPane MainWindow::createSplitPane(TabState& tab) {
     setupRenderedSci(pane.rendered);
     pane.tabWidget->addTab(pane.rendered, "C/C++");     // index 1
 
-    // Debug placeholder
-    auto* debugPage = new QWidget;
-    debugPage->setStyleSheet("background: #1e1e1e;");
-    pane.tabWidget->addTab(debugPage, "Debug");         // index 2
-
     pane.tabWidget->setCurrentIndex(0);
     pane.viewMode = VM_Reclass;
 
@@ -413,9 +413,8 @@ MainWindow::SplitPane MainWindow::createSplitPane(TabState& tab) {
         SplitPane* p = findPaneByTabWidget(tw);
         if (!p) return;
 
-        if (index == 2)      p->viewMode = VM_Debug;
-        else if (index == 1) p->viewMode = VM_Rendered;
-        else                 p->viewMode = VM_Reclass;
+        if (index == 1) p->viewMode = VM_Rendered;
+        else            p->viewMode = VM_Reclass;
 
         if (index == 1) {
             // Find the TabState that owns this pane and update rendered view
@@ -428,7 +427,6 @@ MainWindow::SplitPane MainWindow::createSplitPane(TabState& tab) {
                 }
             }
         }
-        syncRenderMenuState();
     });
 
     return pane;
@@ -662,15 +660,6 @@ void MainWindow::saveFileAs() {
     project_save(nullptr, true);
 }
 
-void MainWindow::loadBinary() {
-    auto* tab = activeTab();
-    if (!tab) return;
-    QString path = QFileDialog::getOpenFileName(this,
-        "Load Binary Data", {}, "All Files (*)");
-    if (path.isEmpty()) return;
-    tab->doc->loadData(path);
-}
-
 void MainWindow::addNode() {
     auto* ctrl = activeController();
     if (!ctrl) return;
@@ -885,17 +874,9 @@ void MainWindow::setViewMode(ViewMode mode) {
     auto* pane = findActiveSplitPane();
     if (!pane) return;
     pane->viewMode = mode;
-    int idx = (mode == VM_Rendered) ? 1 : (mode == VM_Debug) ? 2 : 0;
+    int idx = (mode == VM_Rendered) ? 1 : 0;
     pane->tabWidget->setCurrentIndex(idx);
     // The QTabWidget::currentChanged signal will handle updating the rendered view
-    syncRenderMenuState();
-}
-
-void MainWindow::syncRenderMenuState() {
-    auto* pane = findActiveSplitPane();
-    ViewMode vm = pane ? pane->viewMode : VM_Reclass;
-    if (m_actViewRendered) m_actViewRendered->setEnabled(vm != VM_Rendered);
-    if (m_actViewReclass)  m_actViewReclass->setEnabled(vm != VM_Reclass);
 }
 
 // ── Find the root-level struct ancestor for a node ──
@@ -1336,14 +1317,45 @@ int main(int argc, char* argv[]) {
     darkPalette.setColor(QPalette::Text,            QColor("#d4d4d4"));
     darkPalette.setColor(QPalette::Button,          QColor("#333333"));
     darkPalette.setColor(QPalette::ButtonText,      QColor("#d4d4d4"));
-    darkPalette.setColor(QPalette::Highlight,       QColor("#264f78"));
-    darkPalette.setColor(QPalette::HighlightedText, QColor("#ffffff"));
+    darkPalette.setColor(QPalette::Highlight,       QColor("#2b2b2b"));
+    darkPalette.setColor(QPalette::HighlightedText, QColor("#d4d4d4"));
     darkPalette.setColor(QPalette::ToolTipBase,     QColor("#252526"));
     darkPalette.setColor(QPalette::ToolTipText,     QColor("#d4d4d4"));
     darkPalette.setColor(QPalette::Mid,             QColor("#3c3c3c"));
     darkPalette.setColor(QPalette::Dark,            QColor("#1e1e1e"));
     darkPalette.setColor(QPalette::Light,           QColor("#505050"));
     app.setPalette(darkPalette);
+
+    // ── Global widget styling ──
+    // QMenu: grey hover, amber accent border (replaces Fusion outline artifact)
+    // QToolTip: dark theme
+    app.setStyleSheet(QStringLiteral(
+        "QMenu {"
+        "  background-color: #252526;"
+        "  color: #d4d4d4;"
+        "  border: 1px solid #3c3c3c;"
+        "  padding: 4px 6px;"
+        "}"
+        "QMenu::item {"
+        "  padding: 4px 24px;"
+        "}"
+        "QMenu::item:selected {"
+        "  background-color: #2b2b2b;"
+        "}"
+        "QMenu::separator {"
+        "  height: 1px;"
+        "  background: #3c3c3c;"
+        "  margin: 4px 8px;"
+        "}"
+        "QMenu::item:disabled {"
+        "  color: #585858;"
+        "}"
+        "QToolTip {"
+        "  background-color: #252526;"
+        "  color: #d4d4d4;"
+        "  border: 1px solid #3c3c3c;"
+        "}"
+    ));
 
     rcx::MainWindow window;
 

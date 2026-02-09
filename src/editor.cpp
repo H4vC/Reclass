@@ -1674,9 +1674,6 @@ void RcxEditor::showSourcePicker() {
     int zoom = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETZOOM);
     menuFont.setPointSize(menuFont.pointSize() + zoom);
     menu.setFont(menuFont);
-    menu.setStyleSheet(QStringLiteral(
-        "QMenu { background: #252526; color: #d4d4d4; }"
-        "QMenu::item:selected { background: #232323; }"));
     menu.addAction("file");
     menu.addAction("process");
 
