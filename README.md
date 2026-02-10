@@ -14,11 +14,11 @@ State: Plugin system is partially implemented. Some UI bugs exist. MCP server ha
 
  2. Quick Build (relies on powershell| for manual build skip to step 3)
 
- git clone --recurse-submodules https://github.com/IChooseYou/ReclassX.git
- cd ReclassX
- .\scripts\build_qscintilla.ps1
- .\scripts\build.ps1
-   ^ script above tries to autodetect Qt install (as we learned not everyone installs to C:/Qt/)
+    git clone --recurse-submodules https://github.com/IChooseYou/ReclassX.git
+    cd ReclassX
+    .\scripts\build_qscintilla.ps1
+    .\scripts\build.ps1
+    ^ script above tries to autodetect Qt install (as we learned not everyone installs to C:/Qt/)
 
  3. Manual Build
 
