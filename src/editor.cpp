@@ -2154,4 +2154,18 @@ void RcxEditor::setGlobalFontName(const QString& fontName) {
     g_fontName = fontName;
 }
 
+QString RcxEditor::textWithMargins() const {
+    int lineCount = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINECOUNT);
+    QStringList lines;
+    lines.reserve(lineCount);
+    for (int i = 0; i < lineCount; i++) {
+        QString margin;
+        if (i < m_meta.size())
+            margin = m_meta[i].offsetText;
+        QString lineText = getLineText(m_sci, i);
+        lines.append(margin + lineText);
+    }
+    return lines.join('\n');
+}
+
 } // namespace rcx

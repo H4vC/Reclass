@@ -1184,7 +1184,7 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
     menu.addSeparator();
 
     menu.addAction(icon("clippy.svg"), "Copy All as Text", [editor]() {
-        QApplication::clipboard()->setText(editor->scintilla()->text());
+        QApplication::clipboard()->setText(editor->textWithMargins());
     });
 
     menu.exec(globalPos);

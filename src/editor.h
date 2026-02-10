@@ -49,6 +49,7 @@ public:
     static void setGlobalFontName(const QString& fontName);
 
     // Custom type names (struct types from the tree) shown in type picker + lexer GlobalClass coloring
+    QString textWithMargins() const;
     void setCustomTypeNames(const QStringList& names);
 
     // Saved sources for quick-switch in source picker
