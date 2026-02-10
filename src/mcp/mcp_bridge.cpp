@@ -123,6 +123,7 @@ QJsonObject McpBridge::errReply(const QJsonValue& id, int code, const QString& m
 void McpBridge::sendJson(const QJsonObject& obj) {
     if (!m_client) return;
     QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    qDebug() << "[MCP] >>" << data.left(200);
     data.append('\n');
     m_client->write(data);
     m_client->flush();
@@ -151,6 +152,7 @@ QJsonObject McpBridge::makeTextResult(const QString& text, bool isError) {
 // ════════════════════════════════════════════════════════════════════
 
 void McpBridge::processLine(const QByteArray& line) {
+    qDebug() << "[MCP] <<" << line.trimmed().left(200);
     auto doc = QJsonDocument::fromJson(line);
     if (!doc.isObject()) {
         sendJson(errReply(QJsonValue(), -32700, "Parse error"));
@@ -263,7 +265,7 @@ QJsonObject McpBridge::handleToolsList(const QJsonValue& id) {
     tools.append(QJsonObject{
         {"name", "source.switch"},
         {"description", "Switch active data source (provider). Use sourceIndex for saved sources, "
-                        "or filePath to load a new binary file."},
+                        "filePath to load a binary file, or pid to attach to a live process."},
         {"inputSchema", QJsonObject{
             {"type", "object"},
             {"properties", QJsonObject{
@@ -271,6 +273,10 @@ QJsonObject McpBridge::handleToolsList(const QJsonValue& id) {
                     {"description", "MDI tab index (0-based). Omit for active tab."}}},
                 {"sourceIndex", QJsonObject{{"type", "integer"}}},
                 {"filePath", QJsonObject{{"type", "string"}}},
+                {"pid", QJsonObject{{"type", "integer"},
+                    {"description", "Process ID to attach to for live memory reading."}}},
+                {"processName", QJsonObject{{"type", "string"},
+                    {"description", "Display name for the process (optional with pid)."}}},
                 {"allViews", QJsonObject{{"type", "boolean"}}}
             }}
         }}
@@ -549,10 +555,12 @@ QJsonObject McpBridge::toolTreeApply(const QJsonObject& args) {
     }
 
     // Phase 2: Execute in undo macro
-    ctrl->setSuppressRefresh(true);
+    if (!m_slowMode)
+        ctrl->setSuppressRefresh(true);
     doc->undoStack.beginMacro(macroName);
 
     int applied = 0;
+    uint64_t lastRootStructId = 0;  // track root-level struct inserts
     QStringList skippedOps;
     for (int i = 0; i < ops.size(); i++) {
         // Safety valve: keep paint events flowing for large batches
@@ -594,6 +602,8 @@ QJsonObject McpBridge::toolTreeApply(const QJsonObject& args) {
             }
 
             doc->undoStack.push(new RcxCommand(ctrl, cmd::Insert{n, {}}));
+            if (n.parentId == 0 && n.kind == NodeKind::Struct)
+                lastRootStructId = n.id;
             applied++;
         }
         else if (opType == "remove") {
@@ -722,10 +732,22 @@ QJsonObject McpBridge::toolTreeApply(const QJsonObject& args) {
         else {
             skippedOps.append(QStringLiteral("op[%1]: unknown op '%2'").arg(i).arg(opType));
         }
+
+        // Slow mode: refresh after each operation for visual feedback
+        if (m_slowMode && applied > 0) {
+            ctrl->refresh();
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 16);
+        }
     }
 
     doc->undoStack.endMacro();
-    ctrl->setSuppressRefresh(false);
+    if (!m_slowMode)
+        ctrl->setSuppressRefresh(false);
+
+    // Auto-switch view to newly created root struct
+    if (lastRootStructId)
+        ctrl->setViewRootId(lastRootStructId);
+
     ctrl->refresh();
 
     // Build response with assigned placeholder IDs
@@ -770,6 +792,14 @@ QJsonObject McpBridge::toolSourceSwitch(const QJsonObject& args) {
                               " (" + sources[idx].displayName + ")");
     }
 
+    if (args.contains("pid")) {
+        uint32_t pid = (uint32_t)args.value("pid").toInteger();
+        QString name = args.value("processName").toString();
+        if (name.isEmpty()) name = QString("PID %1").arg(pid);
+        ctrl->attachToProcess(pid, name);
+        return makeTextResult("Attached to process " + name + " (PID " + QString::number(pid) + ")");
+    }
+
     if (args.contains("filePath")) {
         QString path = args.value("filePath").toString();
         doc->loadData(path);
@@ -777,7 +807,7 @@ QJsonObject McpBridge::toolSourceSwitch(const QJsonObject& args) {
         return makeTextResult("Loaded file: " + path);
     }
 
-    return makeTextResult("Provide sourceIndex or filePath", true);
+    return makeTextResult("Provide sourceIndex, filePath, or pid", true);
 }
 
 // ════════════════════════════════════════════════════════════════════

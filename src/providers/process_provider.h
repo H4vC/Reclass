@@ -38,10 +38,13 @@ public:
     bool isReadable(uint64_t, int len) const override { return len >= 0; }
 
     bool read(uint64_t addr, void* buf, int len) const override {
+        if (!m_handle || len <= 0) return false;
         SIZE_T got = 0;
-        BOOL ok = ReadProcessMemory(m_handle,
+        ReadProcessMemory(m_handle,
             (LPCVOID)(m_base + addr), buf, len, &got);
-        return ok && (int)got == len;
+        if ((int)got < len)
+            memset((char*)buf + got, 0, len - got);
+        return got > 0;
     }
 
     bool isWritable() const override { return true; }
@@ -73,6 +76,8 @@ public:
 
     HANDLE handle() const { return m_handle; }
     uint64_t baseAddress() const { return m_base; }
+    uint64_t base() const override { return m_base; }
+    void setBase(uint64_t b) override { m_base = b; }
     void refreshModules() { m_modules.clear(); cacheModules(); }
 
 private:

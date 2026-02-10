@@ -447,9 +447,12 @@ void RcxController::connectEditor(RcxEditor* editor) {
 
                         // Apply provider or show error
                         if (provider) {
+                            uint64_t newBase = provider->base();
                             m_doc->undoStack.clear();
                             m_doc->provider = std::move(provider);
                             m_doc->dataPath.clear();
+                            m_doc->tree.baseAddress = newBase;
+                            resetSnapshot();
                             emit m_doc->documentChanged();
                             refresh();
                         } else if (!errorMsg.isEmpty()) {
@@ -860,6 +863,13 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             }
         } else if constexpr (std::is_same_v<T, cmd::ChangeBase>) {
             tree.baseAddress = isUndo ? c.oldBase : c.newBase;
+            qDebug() << "[ChangeBase] tree.baseAddress =" << Qt::hex << tree.baseAddress
+                     << "provider =" << (m_doc->provider ? "yes" : "null");
+            if (m_doc->provider) {
+                m_doc->provider->setBase(tree.baseAddress);
+                qDebug() << "[ChangeBase] provider->base() now =" << Qt::hex << m_doc->provider->base();
+            }
+            resetSnapshot();
         } else if constexpr (std::is_same_v<T, cmd::WriteBytes>) {
             const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
             if (!m_doc->provider->writeBytes(c.addr, bytes))
@@ -1585,6 +1595,9 @@ void RcxController::attachToProcess(uint32_t pid, const QString& processName) {
         }
     }
 
+    qDebug() << "[AttachProcess]" << processName << "PID" << pid
+             << "base" << Qt::hex << base << "regionSize" << regionSize;
+
     m_doc->undoStack.clear();
     m_doc->provider = std::make_shared<ProcessProvider>(
         hProc, base, regionSize, processName);
@@ -1662,6 +1675,8 @@ void RcxController::onRefreshTick() {
 
     // Capture shared_ptr copy — keeps provider alive during async read
     auto prov = m_doc->provider;
+    uint64_t base = prov->base();
+    qDebug() << "[Refresh] reading" << extent << "bytes from base" << Qt::hex << base;
     m_refreshWatcher->setFuture(QtConcurrent::run([prov, extent]() -> QByteArray {
         return prov->readBytes(0, extent);
     }));
@@ -1709,19 +1724,20 @@ void RcxController::onReadComplete() {
 }
 
 int RcxController::computeDataExtent() const {
-    // Use provider size as the extent (for ProcessProvider this is the module/region size)
-    int provSize = m_doc->provider->size();
-    if (provSize > 0) return provSize;
-
-    // Fallback: walk tree to find maximum byte offset
-    int maxEnd = 0;
+    // Prefer tree-based extent: exact bytes needed for rendering
+    int treeExtent = 0;
     for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
         int64_t off = m_doc->tree.computeOffset(i);
         int sz = m_doc->tree.nodes[i].byteSize();
         int end = (int)(off + sz);
-        if (end > maxEnd) maxEnd = end;
+        if (end > treeExtent) treeExtent = end;
     }
-    return maxEnd;
+    if (treeExtent > 0) return treeExtent;
+
+    // Fallback: provider size (empty tree)
+    int provSize = m_doc->provider->size();
+    if (provSize > 0) return provSize;
+    return 0;
 }
 
 void RcxController::resetSnapshot() {

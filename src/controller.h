@@ -112,6 +112,7 @@ public:
 
     // MCP bridge accessors
     void setSuppressRefresh(bool v) { m_suppressRefresh = v; }
+    void attachToProcess(uint32_t pid, const QString& processName);
     const QVector<SavedSourceEntry>& savedSources() const { return m_savedSources; }
     int activeSourceIndex() const { return m_activeSourceIdx; }
     void switchSource(int idx) { switchToSavedSource(idx); }
@@ -147,7 +148,6 @@ private:
     void handleMarginClick(RcxEditor* editor, int margin, int line, Qt::KeyboardModifiers mods);
     void updateCommandRow();
     void performRealignment(uint64_t structId, int targetAlign);
-    void attachToProcess(uint32_t pid, const QString& processName);
     void switchToSavedSource(int idx);
     void pushSavedSourcesToEditors();
     void showTypeSelectorPopup(RcxEditor* editor);

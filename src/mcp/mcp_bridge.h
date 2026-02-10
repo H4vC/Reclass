@@ -20,6 +20,9 @@ public:
     void stop();
     bool isRunning() const { return m_server != nullptr; }
 
+    bool slowMode() const { return m_slowMode; }
+    void setSlowMode(bool v) { m_slowMode = v; }
+
     // Call from controller refresh / data change to notify MCP clients
     void notifyTreeChanged();
     void notifyDataChanged();
@@ -30,6 +33,7 @@ private:
     QLocalSocket*  m_client    = nullptr;  // single client for v1
     QByteArray     m_readBuffer;
     bool           m_initialized = false;
+    bool           m_slowMode    = false;
 
     // JSON-RPC plumbing
     void onNewConnection();

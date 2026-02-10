@@ -209,8 +209,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Load plugins
     m_pluginManager.LoadPlugins();
 
-    // MCP bridge (stopped by default — user starts via File → Start MCP)
+    // MCP bridge (on by default)
     m_mcp = new McpBridge(this, this);
+    m_mcp->start();
 
     connect(m_mdiArea, &QMdiArea::subWindowActivated,
             this, [this](QMdiSubWindow*) {
@@ -248,7 +249,7 @@ void MainWindow::createMenus() {
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
-    m_mcpAction = file->addAction("Start &MCP Server", this, &MainWindow::toggleMcp);
+    m_mcpAction = file->addAction("Stop &MCP Server", this, &MainWindow::toggleMcp);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", QKeySequence(Qt::Key_Close), this, &QMainWindow::close);
 

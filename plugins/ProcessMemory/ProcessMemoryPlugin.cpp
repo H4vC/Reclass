@@ -62,9 +62,10 @@ bool ProcessMemoryProvider::read(uint64_t addr, void* buf, int len) const
     if (!m_handle || len <= 0) return false;
 
     SIZE_T bytesRead = 0;
-    if (ReadProcessMemory(m_handle, (LPCVOID)(m_base + addr), buf, (SIZE_T)len, &bytesRead))
-        return bytesRead == (SIZE_T)len;
-    return false;
+    ReadProcessMemory(m_handle, (LPCVOID)(m_base + addr), buf, (SIZE_T)len, &bytesRead);
+    if ((int)bytesRead < len)
+        memset((char*)buf + bytesRead, 0, len - bytesRead);
+    return bytesRead > 0;
 }
 
 bool ProcessMemoryProvider::write(uint64_t addr, const void* buf, int len)
@@ -298,9 +299,9 @@ ProcessMemoryProvider::~ProcessMemoryProvider()
 int ProcessMemoryProvider::size() const
 {
 #ifdef _WIN32
-    return m_handle ? INT_MAX : 0;
+    return m_handle ? 0x10000 : 0;
 #elif defined(__linux__)
-    return m_fd ? INT_MAX : 0;
+    return (m_fd >= 0) ? 0x10000 : 0;
 #endif
 }
 
