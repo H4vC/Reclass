@@ -791,7 +791,7 @@ QJsonObject McpBridge::toolHexRead(const QJsonObject& args) {
     auto* prov = tab->doc->provider.get();
     if (!prov) return makeTextResult("No provider", true);
 
-    int64_t offset = args.value("offset").toInteger();
+    int64_t offset = static_cast<int64_t>(args.value("offset").toDouble());
     int length = qMin(args.value("length").toInt(64), 4096);
 
     if (args.value("baseRelative").toBool())
@@ -873,7 +873,7 @@ QJsonObject McpBridge::toolHexWrite(const QJsonObject& args) {
     auto* doc = tab->doc;
     auto* prov = doc->provider.get();
 
-    int64_t offset = args.value("offset").toInteger();
+    int64_t offset = static_cast<int64_t>(args.value("offset").toDouble());
     QString hexStr = args.value("hexBytes").toString().remove(' ');
 
     if (args.value("baseRelative").toBool())
