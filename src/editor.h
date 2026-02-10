@@ -1,5 +1,6 @@
 #pragma once
 #include "core.h"
+#include "themes/theme.h"
 #include <QWidget>
 #include <QSet>
 #include <QPoint>
@@ -47,6 +48,7 @@ public:
     void setCommandRowText(const QString& line);
     void setEditorFont(const QString& fontName);
     static void setGlobalFontName(const QString& fontName);
+    void applyTheme(const Theme& theme);
 
     // Custom type names (struct types from the tree) shown in type picker + lexer GlobalClass coloring
     QString textWithMargins() const;

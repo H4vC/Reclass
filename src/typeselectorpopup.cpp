@@ -14,6 +14,7 @@
 #include <QIcon>
 #include <QApplication>
 #include <QScreen>
+#include "themes/thememanager.h"
 
 namespace rcx {
 
@@ -34,11 +35,12 @@ public:
                const QModelIndex& index) const override {
         painter->save();
 
-        // Background: editor design language greys
+        // Background: themed colors
+        const auto& t = ThemeManager::instance().current();
         if (option.state & QStyle::State_Selected)
-            painter->fillRect(option.rect, QColor("#232323"));   // M_SELECTED
+            painter->fillRect(option.rect, t.selected);
         else if (option.state & QStyle::State_MouseOver)
-            painter->fillRect(option.rect, QColor("#2b2b2b"));   // M_HOVER
+            painter->fillRect(option.rect, t.hover);
 
         int x = option.rect.x();
         int y = option.rect.y();
@@ -48,7 +50,7 @@ public:
         int row = index.row();
         if (m_filtered && row >= 0 && row < m_filtered->size()
             && (*m_filtered)[row].id == m_currentId) {
-            painter->setPen(QColor("#4ec9b0"));
+            painter->setPen(t.syntaxType);
             QFont checkFont = m_font;
             painter->setFont(checkFont);
             painter->drawText(QRect(x, y, 18, h), Qt::AlignCenter,
@@ -93,17 +95,18 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
 {
     setAttribute(Qt::WA_DeleteOnClose, false);
 
-    // Dark palette (no CSS)
+    // Theme palette
+    const auto& theme = ThemeManager::instance().current();
     QPalette pal;
-    pal.setColor(QPalette::Window,          QColor("#252526"));
-    pal.setColor(QPalette::WindowText,      QColor("#d4d4d4"));
-    pal.setColor(QPalette::Base,            QColor("#1e1e1e"));
-    pal.setColor(QPalette::AlternateBase,   QColor("#2a2d2e"));
-    pal.setColor(QPalette::Text,            QColor("#d4d4d4"));
-    pal.setColor(QPalette::Button,          QColor("#333333"));
-    pal.setColor(QPalette::ButtonText,      QColor("#d4d4d4"));
-    pal.setColor(QPalette::Highlight,       QColor("#2b2b2b"));
-    pal.setColor(QPalette::HighlightedText, QColor("#d4d4d4"));
+    pal.setColor(QPalette::Window,          theme.backgroundAlt);
+    pal.setColor(QPalette::WindowText,      theme.text);
+    pal.setColor(QPalette::Base,            theme.background);
+    pal.setColor(QPalette::AlternateBase,   theme.surface);
+    pal.setColor(QPalette::Text,            theme.text);
+    pal.setColor(QPalette::Button,          theme.button);
+    pal.setColor(QPalette::ButtonText,      theme.text);
+    pal.setColor(QPalette::Highlight,       theme.hover);
+    pal.setColor(QPalette::HighlightedText, theme.text);
     setPalette(pal);
     setAutoFillBackground(true);
 
@@ -130,7 +133,7 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
 
         m_escLabel = new QLabel(QStringLiteral("Esc"));
         QPalette dimPal = pal;
-        dimPal.setColor(QPalette::WindowText, QColor("#858585"));
+        dimPal.setColor(QPalette::WindowText, theme.textDim);
         m_escLabel->setPalette(dimPal);
         row->addWidget(m_escLabel);
 
@@ -159,7 +162,7 @@ TypeSelectorPopup::TypeSelectorPopup(QWidget* parent)
         sep->setFrameShape(QFrame::HLine);
         sep->setFrameShadow(QFrame::Plain);
         QPalette sepPal = pal;
-        sepPal.setColor(QPalette::WindowText, QColor("#3c3c3c"));
+        sepPal.setColor(QPalette::WindowText, theme.border);
         sep->setPalette(sepPal);
         sep->setFixedHeight(1);
         layout->addWidget(sep);

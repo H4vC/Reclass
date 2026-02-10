@@ -41,6 +41,8 @@
 #include <Qsci/qscilexercpp.h>
 #include <QProxyStyle>
 #include <QDesktopServices>
+#include "themes/thememanager.h"
+#include "themes/themeeditor.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -128,6 +130,44 @@ public:
     }
 };
 
+static void applyGlobalTheme(const rcx::Theme& theme) {
+    QPalette pal;
+    pal.setColor(QPalette::Window,          theme.background);
+    pal.setColor(QPalette::WindowText,      theme.text);
+    pal.setColor(QPalette::Base,            theme.backgroundAlt);
+    pal.setColor(QPalette::AlternateBase,   theme.surface);
+    pal.setColor(QPalette::Text,            theme.text);
+    pal.setColor(QPalette::Button,          theme.button);
+    pal.setColor(QPalette::ButtonText,      theme.text);
+    pal.setColor(QPalette::Highlight,       theme.hover);
+    pal.setColor(QPalette::HighlightedText, theme.text);
+    pal.setColor(QPalette::ToolTipBase,     theme.backgroundAlt);
+    pal.setColor(QPalette::ToolTipText,     theme.text);
+    pal.setColor(QPalette::Mid,             theme.border);
+    pal.setColor(QPalette::Dark,            theme.background);
+    pal.setColor(QPalette::Light,           theme.textFaint);
+    qApp->setPalette(pal);
+
+    qApp->setStyleSheet(QStringLiteral(
+        "QMenu {"
+        "  background-color: %1;"
+        "  color: %2;"
+        "  border: 1px solid %3;"
+        "  padding: 4px 6px;"
+        "}"
+        "QMenu::item { padding: 4px 24px; }"
+        "QMenu::item:selected { background-color: %4; }"
+        "QMenu::separator { height: 1px; background: %3; margin: 4px 8px; }"
+        "QMenu::item:disabled { color: %5; }"
+        "QToolTip {"
+        "  background-color: %1;"
+        "  color: %2;"
+        "  border: 1px solid %3;"
+        "}")
+        .arg(theme.backgroundAlt.name(), theme.text.name(), theme.border.name(),
+             theme.hover.name(), theme.textMuted.name()));
+}
+
 namespace rcx {
 
 class MainWindow : public QMainWindow {
@@ -158,6 +198,7 @@ private slots:
     void setEditorFont(const QString& fontName);
     void exportCpp();
     void showTypeAliasesDialog();
+    void editTheme();
 
 public:
     // Project Lifecycle API
@@ -208,6 +249,7 @@ private:
     void setupRenderedSci(QsciScintilla* sci);
 
     SplitPane createSplitPane(TabState& tab);
+    void applyTheme(const Theme& theme);
     void applyTabWidgetStyle(QTabWidget* tw);
     SplitPane* findPaneByTabWidget(QTabWidget* tw);
     SplitPane* findActiveSplitPane();
@@ -229,22 +271,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_mdiArea->setViewMode(QMdiArea::TabbedView);
     m_mdiArea->setTabsClosable(true);
     m_mdiArea->setTabsMovable(true);
-    m_mdiArea->setStyleSheet(QStringLiteral(
-        "QTabBar::tab {"
-        "  background: #1e1e1e;"
-        "  color: #585858;"
-        "  padding: 6px 16px;"
-        "  border: none;"
-        "}"
-        "QTabBar::tab:selected {"
-        "  color: #d4d4d4;"
-        "  background: #252526;"
-        "}"
-        "QTabBar::tab:hover {"
-        "  color: #d4d4d4;"
-        "  background: #2b2b2b;"
-        "}"
-    ));
+    {
+        const auto& t = ThemeManager::instance().current();
+        m_mdiArea->setStyleSheet(QStringLiteral(
+            "QTabBar::tab {"
+            "  background: %1; color: %2; padding: 6px 16px; border: none;"
+            "}"
+            "QTabBar::tab:selected { color: %3; background: %4; }"
+            "QTabBar::tab:hover { color: %3; background: %5; }")
+            .arg(t.background.name(), t.textMuted.name(), t.text.name(),
+                 t.backgroundAlt.name(), t.hover.name()));
+    }
     setCentralWidget(m_mdiArea);
 
     createWorkspaceDock();
@@ -256,6 +293,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     {
         menuBar()->setStyle(new MenuBarStyle(menuBar()->style()));
     }
+
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+            this, &MainWindow::applyTheme);
 
     // Load plugins
     m_pluginManager.LoadPlugins();
@@ -327,6 +367,24 @@ void MainWindow::createMenus() {
     connect(actConsolas, &QAction::triggered, this, [this]() { setEditorFont("Consolas"); });
     connect(actJetBrains, &QAction::triggered, this, [this]() { setEditorFont("JetBrains Mono"); });
 
+    // Theme submenu
+    auto* themeMenu = view->addMenu("&Theme");
+    auto* themeGroup = new QActionGroup(this);
+    themeGroup->setExclusive(true);
+    auto& tm = ThemeManager::instance();
+    auto allThemes = tm.themes();
+    for (int i = 0; i < allThemes.size(); i++) {
+        auto* act = themeMenu->addAction(allThemes[i].name);
+        act->setCheckable(true);
+        act->setActionGroup(themeGroup);
+        if (i == tm.currentIndex()) act->setChecked(true);
+        connect(act, &QAction::triggered, this, [i]() {
+            ThemeManager::instance().setCurrent(i);
+        });
+    }
+    themeMenu->addSeparator();
+    themeMenu->addAction("Edit Theme...", this, &MainWindow::editTheme);
+
     view->addSeparator();
     view->addAction(m_workspaceDock->toggleViewAction());
 
@@ -351,7 +409,12 @@ void MainWindow::createStatusBar() {
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setContentsMargins(10, 0, 0, 0);
     statusBar()->addWidget(m_statusLabel, 1);
-    statusBar()->setStyleSheet("QStatusBar { background: #252526; color: #858585; }");
+    {
+        const auto& t = ThemeManager::instance().current();
+        statusBar()->setStyleSheet(QStringLiteral(
+            "QStatusBar { background: %1; color: %2; }")
+            .arg(t.backgroundAlt.name(), t.textDim.name()));
+    }
 
     QSettings settings("ReclassX", "ReclassX");
     QString fontName = settings.value("font", "JetBrains Mono").toString();
@@ -366,23 +429,16 @@ void MainWindow::applyTabWidgetStyle(QTabWidget* tw) {
     QFont tabFont(fontName, 12);
     tabFont.setFixedPitch(true);
     tw->tabBar()->setFont(tabFont);
+    const auto& t = ThemeManager::instance().current();
     tw->setStyleSheet(QStringLiteral(
         "QTabWidget::pane { border: none; }"
         "QTabBar::tab {"
-        "  background: #1e1e1e;"
-        "  color: #585858;"
-        "  padding: 4px 12px;"
-        "  border: none;"
-        "  min-width: 60px;"
+        "  background: %1; color: %2; padding: 4px 12px; border: none; min-width: 60px;"
         "}"
-        "QTabBar::tab:selected {"
-        "  color: #d4d4d4;"
-        "}"
-        "QTabBar::tab:hover {"
-        "  color: #d4d4d4;"
-        "  background: #2b2b2b;"
-        "}"
-    ));
+        "QTabBar::tab:selected { color: %3; }"
+        "QTabBar::tab:hover { color: %3; background: %4; }")
+        .arg(t.background.name(), t.textMuted.name(),
+             t.text.name(), t.hover.name()));
     tw->tabBar()->setExpanding(false);
 }
 
@@ -754,26 +810,72 @@ void MainWindow::about() {
     lay->setSpacing(12);
 
     auto* buildLabel = new QLabel(
-        QStringLiteral("<span style='color:#858585;font-size:11px;'>"
-                       "Build&ensp;" __DATE__ "&ensp;" __TIME__ "</span>"));
+        QStringLiteral("<span style='color:%1;font-size:11px;'>"
+                       "Build&ensp;" __DATE__ "&ensp;" __TIME__ "</span>")
+            .arg(ThemeManager::instance().current().textDim.name()));
     buildLabel->setAlignment(Qt::AlignCenter);
     lay->addWidget(buildLabel);
 
     auto* ghBtn = new QPushButton("GitHub");
     ghBtn->setCursor(Qt::PointingHandCursor);
-    ghBtn->setStyleSheet(
-        "QPushButton {"
-        "  background: #2a2a2a; color: #d4d4d4; border: 1px solid #3f3f3f;"
-        "  border-radius: 4px; padding: 5px 16px; font-size: 12px;"
-        "}"
-        "QPushButton:hover { background: #333333; border-color: #505050; }");
+    {
+        const auto& t = ThemeManager::instance().current();
+        ghBtn->setStyleSheet(QStringLiteral(
+            "QPushButton {"
+            "  background: %1; color: %2; border: 1px solid %3;"
+            "  border-radius: 4px; padding: 5px 16px; font-size: 12px;"
+            "}"
+            "QPushButton:hover { background: %4; border-color: %5; }")
+            .arg(t.indCmdPill.name(), t.text.name(), t.border.name(),
+                 t.button.name(), t.textFaint.name()));
+    }
     connect(ghBtn, &QPushButton::clicked, this, []() {
         QDesktopServices::openUrl(QUrl("https://github.com/IChooseYou/Reclass"));
     });
     lay->addWidget(ghBtn, 0, Qt::AlignCenter);
 
-    dlg.setStyleSheet("QDialog { background: #1e1e1e; }");
+    dlg.setStyleSheet(QStringLiteral("QDialog { background: %1; }")
+        .arg(ThemeManager::instance().current().background.name()));
     dlg.exec();
+}
+
+void MainWindow::applyTheme(const Theme& theme) {
+    applyGlobalTheme(theme);
+
+    // MDI area tabs
+    m_mdiArea->setStyleSheet(QStringLiteral(
+        "QTabBar::tab {"
+        "  background: %1; color: %2; padding: 6px 16px; border: none;"
+        "}"
+        "QTabBar::tab:selected { color: %3; background: %4; }"
+        "QTabBar::tab:hover { color: %3; background: %5; }")
+        .arg(theme.background.name(), theme.textMuted.name(), theme.text.name(),
+             theme.backgroundAlt.name(), theme.hover.name()));
+
+    // Status bar
+    statusBar()->setStyleSheet(QStringLiteral(
+        "QStatusBar { background: %1; color: %2; }")
+        .arg(theme.backgroundAlt.name(), theme.textDim.name()));
+
+    // Split pane tab widgets
+    for (auto& state : m_tabs) {
+        for (auto& pane : state.panes) {
+            if (pane.tabWidget) applyTabWidgetStyle(pane.tabWidget);
+        }
+    }
+}
+
+void MainWindow::editTheme() {
+    auto& tm = ThemeManager::instance();
+    Theme edited = tm.current();
+    ThemeEditor dlg(edited, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        edited = dlg.result();
+        int idx = tm.currentIndex();
+        if (idx < tm.themes().size() && idx >= 0) {
+            tm.updateTheme(idx, edited);
+        }
+    }
 }
 
 void MainWindow::setEditorFont(const QString& fontName) {
@@ -852,8 +954,9 @@ void MainWindow::setupRenderedSci(QsciScintilla* sci) {
     // Line number margin
     sci->setMarginType(0, QsciScintilla::NumberMargin);
     sci->setMarginWidth(0, "00000");
-    sci->setMarginsBackgroundColor(QColor("#252526"));
-    sci->setMarginsForegroundColor(QColor("#858585"));
+    const auto& theme = ThemeManager::instance().current();
+    sci->setMarginsBackgroundColor(theme.backgroundAlt);
+    sci->setMarginsForegroundColor(theme.textDim);
     sci->setMarginsFont(f);
 
     // Hide other margins
@@ -864,33 +967,33 @@ void MainWindow::setupRenderedSci(QsciScintilla* sci) {
     // because setLexer() resets caret line, selection, and paper colors.
     auto* lexer = new QsciLexerCPP(sci);
     lexer->setFont(f);
-    lexer->setColor(QColor("#569cd6"), QsciLexerCPP::Keyword);
-    lexer->setColor(QColor("#569cd6"), QsciLexerCPP::KeywordSet2);
-    lexer->setColor(QColor("#b5cea8"), QsciLexerCPP::Number);
-    lexer->setColor(QColor("#ce9178"), QsciLexerCPP::DoubleQuotedString);
-    lexer->setColor(QColor("#ce9178"), QsciLexerCPP::SingleQuotedString);
-    lexer->setColor(QColor("#6a9955"), QsciLexerCPP::Comment);
-    lexer->setColor(QColor("#6a9955"), QsciLexerCPP::CommentLine);
-    lexer->setColor(QColor("#6a9955"), QsciLexerCPP::CommentDoc);
-    lexer->setColor(QColor("#d4d4d4"), QsciLexerCPP::Default);
-    lexer->setColor(QColor("#d4d4d4"), QsciLexerCPP::Identifier);
-    lexer->setColor(QColor("#c586c0"), QsciLexerCPP::PreProcessor);
-    lexer->setColor(QColor("#d4d4d4"), QsciLexerCPP::Operator);
+    lexer->setColor(theme.syntaxKeyword, QsciLexerCPP::Keyword);
+    lexer->setColor(theme.syntaxKeyword, QsciLexerCPP::KeywordSet2);
+    lexer->setColor(theme.syntaxNumber, QsciLexerCPP::Number);
+    lexer->setColor(theme.syntaxString, QsciLexerCPP::DoubleQuotedString);
+    lexer->setColor(theme.syntaxString, QsciLexerCPP::SingleQuotedString);
+    lexer->setColor(theme.syntaxComment, QsciLexerCPP::Comment);
+    lexer->setColor(theme.syntaxComment, QsciLexerCPP::CommentLine);
+    lexer->setColor(theme.syntaxComment, QsciLexerCPP::CommentDoc);
+    lexer->setColor(theme.text, QsciLexerCPP::Default);
+    lexer->setColor(theme.text, QsciLexerCPP::Identifier);
+    lexer->setColor(theme.syntaxPreproc, QsciLexerCPP::PreProcessor);
+    lexer->setColor(theme.text, QsciLexerCPP::Operator);
     for (int i = 0; i <= 127; i++) {
-        lexer->setPaper(QColor("#1e1e1e"), i);
+        lexer->setPaper(theme.background, i);
         lexer->setFont(f, i);
     }
     sci->setLexer(lexer);
     sci->setBraceMatching(QsciScintilla::NoBraceMatch);
 
     // Colors applied AFTER setLexer() — the lexer resets these on attach
-    sci->setPaper(QColor("#1e1e1e"));
-    sci->setColor(QColor("#d4d4d4"));
-    sci->setCaretForegroundColor(QColor("#d4d4d4"));
+    sci->setPaper(theme.background);
+    sci->setColor(theme.text);
+    sci->setCaretForegroundColor(theme.text);
     sci->setCaretLineVisible(true);
-    sci->setCaretLineBackgroundColor(QColor(43, 43, 43));   // Match Reclass M_HOVER
-    sci->setSelectionBackgroundColor(QColor("#264f78"));     // Match Reclass edit selection
-    sci->setSelectionForegroundColor(QColor("#d4d4d4"));
+    sci->setCaretLineBackgroundColor(theme.hover);
+    sci->setSelectionBackgroundColor(theme.selection);
+    sci->setSelectionForegroundColor(theme.text);
 }
 
 // ── View mode / generator switching ──
@@ -1333,54 +1436,8 @@ int main(int argc, char* argv[]) {
         rcx::RcxEditor::setGlobalFontName(savedFont);
     }
 
-    // Global dark palette
-    QPalette darkPalette;
-    darkPalette.setColor(QPalette::Window,          QColor("#1e1e1e"));
-    darkPalette.setColor(QPalette::WindowText,      QColor("#d4d4d4"));
-    darkPalette.setColor(QPalette::Base,            QColor("#252526"));
-    darkPalette.setColor(QPalette::AlternateBase,   QColor("#2a2d2e"));
-    darkPalette.setColor(QPalette::Text,            QColor("#d4d4d4"));
-    darkPalette.setColor(QPalette::Button,          QColor("#333333"));
-    darkPalette.setColor(QPalette::ButtonText,      QColor("#d4d4d4"));
-    darkPalette.setColor(QPalette::Highlight,       QColor("#2b2b2b"));
-    darkPalette.setColor(QPalette::HighlightedText, QColor("#d4d4d4"));
-    darkPalette.setColor(QPalette::ToolTipBase,     QColor("#252526"));
-    darkPalette.setColor(QPalette::ToolTipText,     QColor("#d4d4d4"));
-    darkPalette.setColor(QPalette::Mid,             QColor("#3c3c3c"));
-    darkPalette.setColor(QPalette::Dark,            QColor("#1e1e1e"));
-    darkPalette.setColor(QPalette::Light,           QColor("#505050"));
-    app.setPalette(darkPalette);
-
-    // ── Global widget styling ──
-    // QMenu: grey hover, amber accent border (replaces Fusion outline artifact)
-    // QToolTip: dark theme
-    app.setStyleSheet(QStringLiteral(
-        "QMenu {"
-        "  background-color: #252526;"
-        "  color: #d4d4d4;"
-        "  border: 1px solid #3c3c3c;"
-        "  padding: 4px 6px;"
-        "}"
-        "QMenu::item {"
-        "  padding: 4px 24px;"
-        "}"
-        "QMenu::item:selected {"
-        "  background-color: #2b2b2b;"
-        "}"
-        "QMenu::separator {"
-        "  height: 1px;"
-        "  background: #3c3c3c;"
-        "  margin: 4px 8px;"
-        "}"
-        "QMenu::item:disabled {"
-        "  color: #585858;"
-        "}"
-        "QToolTip {"
-        "  background-color: #252526;"
-        "  color: #d4d4d4;"
-        "  border: 1px solid #3c3c3c;"
-        "}"
-    ));
+    // Global theme
+    applyGlobalTheme(rcx::ThemeManager::instance().current());
 
     rcx::MainWindow window;
 

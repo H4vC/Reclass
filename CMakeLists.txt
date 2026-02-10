@@ -35,6 +35,12 @@ add_executable(ReclassX
     src/pluginmanager.h
     src/typeselectorpopup.h
     src/typeselectorpopup.cpp
+    src/themes/theme.h
+    src/themes/theme.cpp
+    src/themes/thememanager.h
+    src/themes/thememanager.cpp
+    src/themes/themeeditor.h
+    src/themes/themeeditor.cpp
 )
 
 target_include_directories(ReclassX PRIVATE src)
@@ -112,7 +118,8 @@ if(BUILD_TESTING)
     target_link_libraries(test_compose PRIVATE Qt6::Core Qt6::Test)
     add_test(NAME test_compose COMMAND test_compose)
 
-    add_executable(test_editor tests/test_editor.cpp src/editor.cpp src/compose.cpp src/format.cpp src/providerregistry.cpp)
+    add_executable(test_editor tests/test_editor.cpp src/editor.cpp src/compose.cpp src/format.cpp src/providerregistry.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
     target_include_directories(test_editor PRIVATE src)
     target_link_libraries(test_editor PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Test
@@ -140,7 +147,8 @@ if(BUILD_TESTING)
     add_executable(test_controller tests/test_controller.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
-        src/typeselectorpopup.cpp)
+        src/typeselectorpopup.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
     target_include_directories(test_controller PRIVATE src)
     target_link_libraries(test_controller PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
@@ -153,7 +161,8 @@ if(BUILD_TESTING)
     add_executable(test_validation tests/test_validation.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
-        src/typeselectorpopup.cpp)
+        src/typeselectorpopup.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
     target_include_directories(test_validation PRIVATE src)
     target_link_libraries(test_validation PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
@@ -172,7 +181,8 @@ if(BUILD_TESTING)
     add_executable(test_context_menu tests/test_context_menu.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
-        src/typeselectorpopup.cpp)
+        src/typeselectorpopup.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
     target_include_directories(test_context_menu PRIVATE src)
     target_link_libraries(test_context_menu PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
@@ -193,7 +203,8 @@ if(BUILD_TESTING)
     add_executable(test_new_features tests/test_new_features.cpp
         src/generator.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/editor.cpp src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
-        src/typeselectorpopup.cpp)
+        src/typeselectorpopup.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
     target_include_directories(test_new_features PRIVATE src)
     target_link_libraries(test_new_features PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
@@ -206,11 +217,18 @@ if(BUILD_TESTING)
     add_executable(test_type_selector tests/test_type_selector.cpp
         src/editor.cpp src/compose.cpp src/format.cpp src/controller.cpp
         src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
-        src/typeselectorpopup.cpp)
+        src/typeselectorpopup.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
     target_include_directories(test_type_selector PRIVATE src)
     target_link_libraries(test_type_selector PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
         QScintilla::QScintilla dbghelp psapi)
     add_test(NAME test_type_selector COMMAND test_type_selector)
+
+    add_executable(test_theme tests/test_theme.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp)
+    target_include_directories(test_theme PRIVATE src)
+    target_link_libraries(test_theme PRIVATE Qt6::Widgets Qt6::Test)
+    add_test(NAME test_theme COMMAND test_theme)
 endif()
 add_subdirectory(plugins/ProcessMemory)

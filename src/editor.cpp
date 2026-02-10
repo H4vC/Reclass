@@ -14,14 +14,9 @@
 #include <QCursor>
 #include <QMenu>
 #include <QApplication>
+#include "themes/thememanager.h"
 
 namespace rcx {
-
-// ── Theme constants ──
-static const QColor kBgText("#1e1e1e");
-static const QColor kBgMargin("#1e1e1e");  // matches regular editor background
-static const QColor kFgMargin("#858585");
-static const QColor kFgMarginDim("#505050");
 
 static constexpr int IND_EDITABLE   = 8;
 static constexpr int IND_HEX_DIM    = 9;
@@ -53,6 +48,10 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
     setupFolding();
     setupMarkers();
     allocateMarginStyles();
+
+    applyTheme(ThemeManager::instance().current());
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+            this, &RcxEditor::applyTheme);
 
     m_sci->installEventFilter(this);
     m_sci->viewport()->installEventFilter(this);
@@ -122,14 +121,8 @@ void RcxEditor::setupScintilla() {
     // Arrow cursor by default — not the I-beam (this is a structured viewer, not a text editor)
     m_sci->viewport()->setCursor(Qt::ArrowCursor);
 
-    m_sci->setPaper(kBgText);
-    m_sci->setColor(QColor("#d4d4d4"));
-
     m_sci->setTabWidth(2);
     m_sci->setIndentationsUseTabs(false);
-
-    // Caret color for dark theme
-    m_sci->setCaretForegroundColor(QColor("#d4d4d4"));
 
     // Line spacing for readability
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETEXTRAASCENT, (long)2);
@@ -147,51 +140,37 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_EDITABLE, 5 /*INDIC_HIDDEN*/);
 
-    // Hex/Padding node dim indicator — overrides text color to gray
+    // Hex/Padding node dim indicator — overrides text color
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_HEX_DIM, 17 /*INDIC_TEXTFORE*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_HEX_DIM, QColor("#505050"));
 
-    // Base address indicator — default text color to override lexer green on command row
+    // Base address indicator — text color override on command row
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_BASE_ADDR, 17 /*INDIC_TEXTFORE*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_BASE_ADDR, QColor("#d4d4d4"));
 
-    // Hover span indicator — muted teal text (distinct from blue keywords)
+    // Hover span indicator — link-like text
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_HOVER_SPAN, 17 /*INDIC_TEXTFORE*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_HOVER_SPAN, QColor("#E6B450"));
 
-    // Command-row pill background (shadcn-ish chip)
+    // Command-row pill background
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_CMD_PILL, 8 /*INDIC_STRAIGHTBOX*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_CMD_PILL, QColor("#2a2a2a"));
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETALPHA,
                          IND_CMD_PILL, (long)100);
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETUNDER,
                          IND_CMD_PILL, (long)1);
 
-    // Data-changed indicator — muted green text (derived from number green #b5cea8)
+    // Data-changed indicator
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_DATA_CHANGED, 17 /*INDIC_TEXTFORE*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_DATA_CHANGED, QColor("#8fbc7a"));
 
-    // Root class name — teal (VS Code type color)
+    // Root class name — type color
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_CLASS_NAME, 17 /*INDIC_TEXTFORE*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_CLASS_NAME, QColor("#4EC9B0"));
 
     // Green text for hint/comment annotations
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_HINT_GREEN, 17 /*INDIC_TEXTFORE*/);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
-                         IND_HINT_GREEN, QColor("#5a8248"));
 
 }
 
@@ -199,29 +178,8 @@ void RcxEditor::setupLexer() {
     m_lexer = new QsciLexerCPP(m_sci);
     QFont font = editorFont();
     m_lexer->setFont(font);
-
-    // Dark theme colors
-    m_lexer->setColor(QColor("#569cd6"), QsciLexerCPP::Keyword);
-    m_lexer->setColor(QColor("#569cd6"), QsciLexerCPP::KeywordSet2);
-    m_lexer->setColor(QColor("#b5cea8"), QsciLexerCPP::Number);
-    m_lexer->setColor(QColor("#ce9178"), QsciLexerCPP::DoubleQuotedString);
-    m_lexer->setColor(QColor("#ce9178"), QsciLexerCPP::SingleQuotedString);
-    m_lexer->setColor(QColor("#6a9955"), QsciLexerCPP::Comment);
-    m_lexer->setColor(QColor("#6a9955"), QsciLexerCPP::CommentLine);
-    m_lexer->setColor(QColor("#6a9955"), QsciLexerCPP::CommentDoc);
-    m_lexer->setColor(QColor("#d4d4d4"), QsciLexerCPP::Default);
-    m_lexer->setColor(QColor("#d4d4d4"), QsciLexerCPP::Identifier);
-    m_lexer->setColor(QColor("#c586c0"), QsciLexerCPP::PreProcessor);
-    m_lexer->setColor(QColor("#d4d4d4"), QsciLexerCPP::Operator);
-
-    // Dark background for all styles
-    for (int i = 0; i <= 127; i++) {
-        m_lexer->setPaper(kBgText, i);
+    for (int i = 0; i <= 127; i++)
         m_lexer->setFont(font, i);
-    }
-
-    // Custom / user-defined types → teal (VS Code #4EC9B0)
-    m_lexer->setColor(QColor("#4EC9B0"), QsciLexerCPP::GlobalClass);
 
     m_sci->setLexer(m_lexer);
     m_sci->setBraceMatching(QsciScintilla::NoBraceMatch);  // Disable - this is a structured viewer
@@ -245,8 +203,6 @@ void RcxEditor::setupMargins() {
     // Margin 0: Offset text
     m_sci->setMarginType(0, QsciScintilla::TextMarginRightJustified);
     m_sci->setMarginWidth(0, "  00000000  ");  // default 8-digit; resized dynamically in applyDocument()
-    m_sci->setMarginsBackgroundColor(kBgMargin);
-    m_sci->setMarginsForegroundColor(kFgMarginDim);
     m_sci->setMarginSensitivity(0, true);
 
     // Margin 1: hidden (fold chevrons moved to text column)
@@ -256,7 +212,6 @@ void RcxEditor::setupMargins() {
 void RcxEditor::setupFolding() {
     // Hide fold margin (fold indicators are text-based now)
     m_sci->setMarginWidth(2, 0);
-    m_sci->setFoldMarginColors(kBgMargin, kBgMargin);
 
     // Fold indicators are now text in the line content (kFoldCol prefix),
     // so no Scintilla markers needed for fold state.
@@ -281,37 +236,26 @@ void RcxEditor::setupMarkers() {
     // M_PAD (1): padding line (metadata only, no visual)
     m_sci->markerDefine(QsciScintilla::Invisible, M_PAD);
 
-    // M_PTR0 (2): right triangle (red)
+    // M_PTR0 (2): right triangle
     m_sci->markerDefine(QsciScintilla::RightTriangle, M_PTR0);
-    m_sci->setMarkerBackgroundColor(QColor("#f44747"), M_PTR0);
-    m_sci->setMarkerForegroundColor(QColor("#f44747"), M_PTR0);
 
-    // M_CYCLE (3): arrows (orange)
+    // M_CYCLE (3): arrows
     m_sci->markerDefine(QsciScintilla::ThreeRightArrows, M_CYCLE);
-    m_sci->setMarkerBackgroundColor(QColor("#e5a00d"), M_CYCLE);
-    m_sci->setMarkerForegroundColor(QColor("#e5a00d"), M_CYCLE);
 
-    // M_ERR (4): background (dark red - brightened for visibility)
+    // M_ERR (4): background
     m_sci->markerDefine(QsciScintilla::Background, M_ERR);
-    m_sci->setMarkerBackgroundColor(QColor("#7a2e2e"), M_ERR);
-    m_sci->setMarkerForegroundColor(QColor("#ffffff"), M_ERR);
 
-    // M_STRUCT_BG (5): struct header/footer (matches regular bg, may remove later)
+    // M_STRUCT_BG (5): struct header/footer
     m_sci->markerDefine(QsciScintilla::Background, M_STRUCT_BG);
-    m_sci->setMarkerBackgroundColor(QColor("#1e1e1e"), M_STRUCT_BG);
-    m_sci->setMarkerForegroundColor(QColor("#d4d4d4"), M_STRUCT_BG);
 
     // M_HOVER (6): full-row hover highlight
     m_sci->markerDefine(QsciScintilla::Background, M_HOVER);
-    m_sci->setMarkerBackgroundColor(QColor(43, 43, 43), M_HOVER);
 
-    // M_SELECTED (7): full-row selection highlight (higher = wins over hover)
+    // M_SELECTED (7): full-row selection highlight
     m_sci->markerDefine(QsciScintilla::Background, M_SELECTED);
-    m_sci->setMarkerBackgroundColor(QColor(35, 35, 35), M_SELECTED);
 
     // M_CMD_ROW (8): distinct background for CommandRow bar
     m_sci->markerDefine(QsciScintilla::Background, M_CMD_ROW);
-    m_sci->setMarkerBackgroundColor(QColor("#1e1e1e"), M_CMD_ROW);
 }
 
 void RcxEditor::allocateMarginStyles() {
@@ -322,18 +266,84 @@ void RcxEditor::allocateMarginStyles() {
     m_marginStyleBase = (int)base;
     m_sci->SendScintilla(QsciScintillaBase::SCI_MARGINSETSTYLEOFFSET, base);
 
-    const long bgrMargin = 0x1e1e1e; // BGR for #1e1e1e (matches editor bg)
     QByteArray fontName = editorFont().family().toUtf8();
     int fontSize = editorFont().pointSize();
 
-    // Margin styles (dim gray text)
     for (int s = MSTYLE_NORMAL; s <= MSTYLE_CONT; s++) {
         unsigned long abs = (unsigned long)(base + s);
-        m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETFORE, abs, (long)0x505050);
-        m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETBACK, abs, bgrMargin);
         m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETFONT,
                              (uintptr_t)abs, fontName.constData());
         m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETSIZE, abs, (long)fontSize);
+    }
+}
+
+void RcxEditor::applyTheme(const Theme& theme) {
+    // Paper and text
+    m_sci->setPaper(theme.background);
+    m_sci->setColor(theme.text);
+    m_sci->setCaretForegroundColor(theme.text);
+
+    // Indicator colors
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_HEX_DIM, theme.textFaint);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_BASE_ADDR, theme.text);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_HOVER_SPAN, theme.indHoverSpan);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_CMD_PILL, theme.indCmdPill);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_DATA_CHANGED, theme.indDataChanged);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_CLASS_NAME, theme.syntaxType);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETFORE,
+                         IND_HINT_GREEN, theme.indHintGreen);
+
+    // Lexer colors
+    m_lexer->setColor(theme.syntaxKeyword, QsciLexerCPP::Keyword);
+    m_lexer->setColor(theme.syntaxKeyword, QsciLexerCPP::KeywordSet2);
+    m_lexer->setColor(theme.syntaxNumber, QsciLexerCPP::Number);
+    m_lexer->setColor(theme.syntaxString, QsciLexerCPP::DoubleQuotedString);
+    m_lexer->setColor(theme.syntaxString, QsciLexerCPP::SingleQuotedString);
+    m_lexer->setColor(theme.syntaxComment, QsciLexerCPP::Comment);
+    m_lexer->setColor(theme.syntaxComment, QsciLexerCPP::CommentLine);
+    m_lexer->setColor(theme.syntaxComment, QsciLexerCPP::CommentDoc);
+    m_lexer->setColor(theme.text, QsciLexerCPP::Default);
+    m_lexer->setColor(theme.text, QsciLexerCPP::Identifier);
+    m_lexer->setColor(theme.syntaxPreproc, QsciLexerCPP::PreProcessor);
+    m_lexer->setColor(theme.text, QsciLexerCPP::Operator);
+    m_lexer->setColor(theme.syntaxType, QsciLexerCPP::GlobalClass);
+    for (int i = 0; i <= 127; i++)
+        m_lexer->setPaper(theme.background, i);
+
+    // Margins
+    m_sci->setMarginsBackgroundColor(theme.background);
+    m_sci->setMarginsForegroundColor(theme.textFaint);
+    m_sci->setFoldMarginColors(theme.background, theme.background);
+
+    // Markers
+    m_sci->setMarkerBackgroundColor(theme.markerPtr, M_PTR0);
+    m_sci->setMarkerForegroundColor(theme.markerPtr, M_PTR0);
+    m_sci->setMarkerBackgroundColor(theme.markerCycle, M_CYCLE);
+    m_sci->setMarkerForegroundColor(theme.markerCycle, M_CYCLE);
+    m_sci->setMarkerBackgroundColor(theme.markerError, M_ERR);
+    m_sci->setMarkerForegroundColor(QColor("#ffffff"), M_ERR);
+    m_sci->setMarkerBackgroundColor(theme.background, M_STRUCT_BG);
+    m_sci->setMarkerForegroundColor(theme.text, M_STRUCT_BG);
+    m_sci->setMarkerBackgroundColor(theme.hover, M_HOVER);
+    m_sci->setMarkerBackgroundColor(theme.selected, M_SELECTED);
+    m_sci->setMarkerBackgroundColor(theme.background, M_CMD_ROW);
+
+    // Margin extended styles
+    if (m_marginStyleBase >= 0) {
+        long base = m_marginStyleBase;
+        for (int s = 0; s <= 1; s++) {
+            unsigned long abs = (unsigned long)(base + s);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETFORE,
+                                 abs, theme.textFaint);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_STYLESETBACK,
+                                 abs, theme.background);
+        }
     }
 }
 
@@ -1561,7 +1571,7 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
     if (!isPicker)
         m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)1,
-                             QColor("#264f78"));
+                             ThemeManager::instance().current().selection);
 
     // Use correct UTF-8 position conversion (not lineStart + col!)
     m_editState.posStart = posFromCol(m_sci, line, norm.start);
