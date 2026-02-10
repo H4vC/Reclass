@@ -45,9 +45,10 @@ target_link_libraries(ReclassX PRIVATE
     Qt6::Svg
     Qt6::Concurrent
     QScintilla::QScintilla
-    dbghelp
-    psapi
 )
+if(WIN32)
+    target_link_libraries(ReclassX PRIVATE dbghelp psapi)
+endif()
 
 add_custom_target(screenshot ALL
     COMMAND ReclassX --screenshot ${CMAKE_BINARY_DIR}/screenshot.png
@@ -143,7 +144,10 @@ if(BUILD_TESTING)
     target_include_directories(test_controller PRIVATE src)
     target_link_libraries(test_controller PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
-        QScintilla::QScintilla dbghelp psapi)
+        QScintilla::QScintilla)
+    if(WIN32)
+        target_link_libraries(test_controller PRIVATE dbghelp psapi)
+    endif()
     add_test(NAME test_controller COMMAND test_controller)
 
     add_executable(test_validation tests/test_validation.cpp
@@ -153,7 +157,10 @@ if(BUILD_TESTING)
     target_include_directories(test_validation PRIVATE src)
     target_link_libraries(test_validation PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
-        QScintilla::QScintilla dbghelp psapi)
+        QScintilla::QScintilla)
+    if(WIN32)
+        target_link_libraries(test_validation PRIVATE dbghelp psapi)
+    endif()
     add_test(NAME test_validation COMMAND test_validation)
 
     add_executable(test_generator tests/test_generator.cpp
@@ -169,7 +176,10 @@ if(BUILD_TESTING)
     target_include_directories(test_context_menu PRIVATE src)
     target_link_libraries(test_context_menu PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
-        QScintilla::QScintilla dbghelp psapi)
+        QScintilla::QScintilla)
+    if(WIN32)
+        target_link_libraries(test_context_menu PRIVATE dbghelp psapi)
+    endif()
     add_test(NAME test_context_menu COMMAND test_context_menu)
 
     add_executable(test_rendered_view tests/test_rendered_view.cpp
@@ -187,7 +197,10 @@ if(BUILD_TESTING)
     target_include_directories(test_new_features PRIVATE src)
     target_link_libraries(test_new_features PRIVATE
         Qt6::Widgets Qt6::PrintSupport Qt6::Concurrent Qt6::Test
-        QScintilla::QScintilla dbghelp psapi)
+        QScintilla::QScintilla)
+    if(WIN32)
+        target_link_libraries(test_new_features PRIVATE dbghelp psapi)
+    endif()
     add_test(NAME test_new_features COMMAND test_new_features)
 
     add_executable(test_type_selector tests/test_type_selector.cpp
