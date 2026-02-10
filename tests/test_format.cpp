@@ -39,12 +39,21 @@ private slots:
     }
 
     void testFmtOffsetMargin_primary() {
-        QCOMPARE(fmt::fmtOffsetMargin(0x10, false), QString("10"));
-        QCOMPARE(fmt::fmtOffsetMargin(0, false),    QString("0"));
+        QCOMPARE(fmt::fmtOffsetMargin(0x10, false), QString("00000010 "));
+        QCOMPARE(fmt::fmtOffsetMargin(0, false),    QString("00000000 "));
     }
 
     void testFmtOffsetMargin_continuation() {
-        QCOMPARE(fmt::fmtOffsetMargin(0x10, true), QString("  \u00B7"));
+        QCOMPARE(fmt::fmtOffsetMargin(0x10, true), QString("  \u00B7 "));
+    }
+
+    void testFmtOffsetMargin_kernelAddr() {
+        QCOMPARE(fmt::fmtOffsetMargin(0xFFFFF80012345678ULL, false, 16),
+                 QString("FFFFF80012345678 "));
+        QCOMPARE(fmt::fmtOffsetMargin(0x10, false, 16),
+                 QString("0000000000000010 "));
+        QCOMPARE(fmt::fmtOffsetMargin(0x10, false, 4),
+                 QString("0010 "));
     }
 
     void testFmtStructHeader() {

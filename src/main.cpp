@@ -315,16 +315,16 @@ void MainWindow::createMenus() {
     auto* actConsolas = fontMenu->addAction("Consolas");
     actConsolas->setCheckable(true);
     actConsolas->setActionGroup(fontGroup);
-    auto* actIosevka = fontMenu->addAction("Iosevka");
-    actIosevka->setCheckable(true);
-    actIosevka->setActionGroup(fontGroup);
+    auto* actJetBrains = fontMenu->addAction("JetBrains Mono");
+    actJetBrains->setCheckable(true);
+    actJetBrains->setActionGroup(fontGroup);
     // Load saved preference
     QSettings settings("ReclassX", "ReclassX");
-    QString savedFont = settings.value("font", "Consolas").toString();
-    if (savedFont == "Iosevka") actIosevka->setChecked(true);
+    QString savedFont = settings.value("font", "JetBrains Mono").toString();
+    if (savedFont == "JetBrains Mono") actJetBrains->setChecked(true);
     else actConsolas->setChecked(true);
     connect(actConsolas, &QAction::triggered, this, [this]() { setEditorFont("Consolas"); });
-    connect(actIosevka, &QAction::triggered, this, [this]() { setEditorFont("Iosevka"); });
+    connect(actJetBrains, &QAction::triggered, this, [this]() { setEditorFont("JetBrains Mono"); });
 
     view->addSeparator();
     view->addAction(m_workspaceDock->toggleViewAction());
@@ -353,7 +353,7 @@ void MainWindow::createStatusBar() {
     statusBar()->setStyleSheet("QStatusBar { background: #252526; color: #858585; }");
 
     QSettings settings("ReclassX", "ReclassX");
-    QString fontName = settings.value("font", "Consolas").toString();
+    QString fontName = settings.value("font", "JetBrains Mono").toString();
     QFont f(fontName, 12);
     f.setFixedPitch(true);
     statusBar()->setFont(f);
@@ -361,7 +361,7 @@ void MainWindow::createStatusBar() {
 
 void MainWindow::applyTabWidgetStyle(QTabWidget* tw) {
     QSettings settings("ReclassX", "ReclassX");
-    QString fontName = settings.value("font", "Consolas").toString();
+    QString fontName = settings.value("font", "JetBrains Mono").toString();
     QFont tabFont(fontName, 12);
     tabFont.setFixedPitch(true);
     tw->tabBar()->setFont(tabFont);
@@ -813,7 +813,7 @@ void MainWindow::updateWindowTitle() {
 
 void MainWindow::setupRenderedSci(QsciScintilla* sci) {
     QSettings settings("ReclassX", "ReclassX");
-    QString fontName = settings.value("font", "Consolas").toString();
+    QString fontName = settings.value("font", "JetBrains Mono").toString();
     QFont f(fontName, 12);
     f.setFixedPitch(true);
 
@@ -1112,7 +1112,7 @@ void MainWindow::createWorkspaceDock() {
     // Match editor font
     {
         QSettings settings("ReclassX", "ReclassX");
-        QString fontName = settings.value("font", "Consolas").toString();
+        QString fontName = settings.value("font", "JetBrains Mono").toString();
         QFont f(fontName, 12);
         f.setFixedPitch(true);
         m_workspaceTree->setFont(f);
@@ -1299,13 +1299,13 @@ int main(int argc, char* argv[]) {
     app.setStyle("Fusion"); // Fusion style respects dark palette well
 
     // Load embedded fonts
-    int fontId = QFontDatabase::addApplicationFont(":/fonts/Iosevka-Regular.ttf");
+    int fontId = QFontDatabase::addApplicationFont(":/fonts/JetBrainsMono.ttf");
     if (fontId == -1)
-        qWarning("Failed to load embedded Iosevka font");
+        qWarning("Failed to load embedded JetBrains Mono font");
     // Apply saved font preference before creating any editors
     {
         QSettings settings("ReclassX", "ReclassX");
-        QString savedFont = settings.value("font", "Consolas").toString();
+        QString savedFont = settings.value("font", "JetBrains Mono").toString();
         rcx::RcxEditor::setGlobalFontName(savedFont);
     }
 

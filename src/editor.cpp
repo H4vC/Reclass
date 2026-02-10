@@ -32,7 +32,7 @@ static constexpr int IND_DATA_CHANGED = 13; // Amber text for changed data value
 static constexpr int IND_CLASS_NAME   = 14; // Teal text for root class name
 static constexpr int IND_HINT_GREEN   = 15; // Green text for hint/comment text
 
-static QString g_fontName = "Consolas";
+static QString g_fontName = "JetBrains Mono";
 
 static QFont editorFont() {
     QFont f(g_fontName, 12);
@@ -139,6 +139,10 @@ void RcxEditor::setupScintilla() {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELFORE, (long)0, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETSELBACK, (long)0, (long)0);
 
+    // Auto-size horizontal scrollbar to actual content width (default is fixed 2000px)
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSCROLLWIDTHTRACKING, 1);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSCROLLWIDTH, 1);
+
     // Editable-field indicator - HIDDEN (no visual)
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICSETSTYLE,
                          IND_EDITABLE, 5 /*INDIC_HIDDEN*/);
@@ -240,7 +244,7 @@ void RcxEditor::setupMargins() {
 
     // Margin 0: Offset text
     m_sci->setMarginType(0, QsciScintilla::TextMarginRightJustified);
-    m_sci->setMarginWidth(0, "  0x00000000  ");
+    m_sci->setMarginWidth(0, "  00000000  ");  // default 8-digit; resized dynamically in applyDocument()
     m_sci->setMarginsBackgroundColor(kBgMargin);
     m_sci->setMarginsForegroundColor(kFgMarginDim);
     m_sci->setMarginSensitivity(0, true);
@@ -346,9 +350,17 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     m_meta = result.meta;
     m_layout = result.layout;
 
+    // Dynamically resize margin to fit the current hex digit tier
+    QString marginSizer = QString("  %1  ").arg(QString(m_layout.offsetHexDigits, '0'));
+    m_sci->setMarginWidth(0, marginSizer);
+
     m_sci->setReadOnly(false);
     m_sci->setText(result.text);
     m_sci->setReadOnly(true);
+
+    // Reset scroll width so tracking re-measures from current content
+    // (tracking never shrinks automatically — only grows)
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETSCROLLWIDTH, 1);
 
     // Force full re-lex to fix stale syntax coloring after edits
     m_sci->SendScintilla(QsciScintillaBase::SCI_COLOURISE, (uintptr_t)0, (long)-1);
@@ -370,7 +382,6 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
 }
 
 void RcxEditor::applyMarginText(const QVector<LineMeta>& meta) {
-    // Clear all margin text
     m_sci->clearMarginText(-1);
 
     for (int i = 0; i < meta.size(); i++) {
@@ -449,6 +460,21 @@ void RcxEditor::applyHexDimming(const QVector<LineMeta>& meta) {
             long pos, len; lineRangeNoEol(m_sci, i, pos, len);
             if (len > 0)
                 m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, pos, len);
+        }
+        // Dim struct/array braces: entire footer line, trailing "{" on headers
+        if (meta[i].lineKind == LineKind::Footer) {
+            long pos, len; lineRangeNoEol(m_sci, i, pos, len);
+            if (len > 0)
+                m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, pos, len);
+        } else if (meta[i].lineKind == LineKind::Header) {
+            long endPos = m_sci->SendScintilla(QsciScintillaBase::SCI_GETLINEENDPOSITION, (unsigned long)i);
+            for (long p = endPos - 1; p >= 0; --p) {
+                int ch = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETCHARAT, (unsigned long)p);
+                if (ch == ' ' || ch == '\t') continue;
+                if (ch == '{')
+                    m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORFILLRANGE, p, 1);
+                break;
+            }
         }
     }
 }
@@ -1351,12 +1377,30 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
             if (lineText.mid(m_editState.spanStart, 2).startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
                 minCol = m_editState.spanStart + 2;
         }
+        // If there's an active selection, collapse it to the left end (Left only, not Backspace)
+        if (ke->key() == Qt::Key_Left) {
+            int sL, sC, eL, eC;
+            m_sci->getSelection(&sL, &sC, &eL, &eC);
+            if (sL >= 0 && (sL != eL || sC != eC)) {
+                int leftEnd = qMax(qMin(sC, eC), minCol);
+                m_sci->setCursorPosition(m_editState.line, leftEnd);
+                return true;
+            }
+        }
         if (col <= minCol) return true;
         return false;
     }
     case Qt::Key_Right: {
         int line, col;
         m_sci->getCursorPosition(&line, &col);
+        // If there's an active selection, collapse it to the right end first
+        int sL, sC, eL, eC;
+        m_sci->getSelection(&sL, &sC, &eL, &eC);
+        if (sL >= 0 && (sL != eL || sC != eC)) {
+            int rightEnd = qMin(qMax(sC, eC), editEndCol());
+            m_sci->setCursorPosition(m_editState.line, rightEnd);
+            return true;
+        }
         if (col >= editEndCol()) return true;  // block past end
         return false;
     }
@@ -1468,8 +1512,9 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
         m_editState.editKind = NodeKind::Float;
 
     // Store fixed comment column position for value editing
+    // Use large lineLength so commentCol is always computed (padding added dynamically)
     if (target == EditTarget::Value) {
-        ColumnSpan cs = commentSpanFor(*lm, lineText.size(), lm->effectiveTypeW, lm->effectiveNameW);
+        ColumnSpan cs = commentSpanFor(*lm, 9999, lm->effectiveTypeW, lm->effectiveNameW);
         m_editState.commentCol = cs.valid ? cs.start : -1;
         m_editState.lastValidationOk = true;  // original value is always valid
     } else {
@@ -1480,6 +1525,26 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETUNDOCOLLECTION, (long)0);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETCARETWIDTH, 1);
     m_sci->setReadOnly(false);
+
+    // For value editing: extend line with trailing spaces for the edit comment area
+    // (comment padding is no longer baked into every line to avoid unnecessary scroll width)
+    if (target == EditTarget::Value && m_editState.commentCol >= 0) {
+        int commentStart = norm.end + 2;
+        int neededLen = commentStart + kColComment;
+        int currentLen = (int)lineText.size();
+        if (currentLen < neededLen) {
+            int extend = neededLen - currentLen;
+            long lineEndPos = posFromCol(m_sci, line, currentLen);
+            QString pad(extend, ' ');
+            QByteArray padUtf8 = pad.toUtf8();
+            m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETSTART, lineEndPos);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_SETTARGETEND, lineEndPos);
+            m_sci->SendScintilla(QsciScintillaBase::SCI_REPLACETARGET,
+                                 (uintptr_t)padUtf8.size(), padUtf8.constData());
+            m_editState.linelenAfterReplace += extend;
+        }
+    }
+
     // Switch to I-beam for editing (skip for picker-based targets)
     if (target != EditTarget::Type && target != EditTarget::Source
         && target != EditTarget::ArrayElementType && target != EditTarget::PointerTarget
@@ -2079,8 +2144,10 @@ void RcxEditor::setEditorFont(const QString& fontName) {
         m_lexer->setFont(f, i);
     m_sci->setMarginsFont(f);
 
-    // Re-apply margin styles with new font
+    // Re-apply margin styles and width with new font metrics
     allocateMarginStyles();
+    QString marginSizer = QString("  %1  ").arg(QString(m_layout.offsetHexDigits, '0'));
+    m_sci->setMarginWidth(0, marginSizer);
 }
 
 void RcxEditor::setGlobalFontName(const QString& fontName) {

@@ -1496,7 +1496,7 @@ void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
 
     // Get font with zoom
     QSettings settings("ReclassX", "ReclassX");
-    QString fontName = settings.value("font", "Consolas").toString();
+    QString fontName = settings.value("font", "JetBrains Mono").toString();
     QFont font(fontName, 12);
     font.setFixedPitch(true);
     auto* sci = editor->scintilla();

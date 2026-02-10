@@ -439,6 +439,7 @@ inline bool isSyntheticLine(const LineMeta& lm) {
 struct LayoutInfo {
     int typeW = 14;  // Effective type column width (default = kColType)
     int nameW = 22;  // Effective name column width (default = kColName)
+    int offsetHexDigits = 8;  // Hex digits for offset margin (4/8/12/16)
 };
 
 // ── ComposeResult ──
@@ -750,7 +751,7 @@ namespace fmt {
                         uint64_t addr, int depth, int subLine = 0,
                         const QString& comment = {}, int colType = kColType, int colName = kColName,
                         const QString& typeOverride = {});
-    QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation);
+    QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation, int hexDigits = 8);
     QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType = kColType, int colName = kColName);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
     QString fmtArrayHeader(const Node& node, int depth, int viewIdx, bool collapsed, int colType = kColType, int colName = kColName);

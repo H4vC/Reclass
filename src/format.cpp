@@ -111,9 +111,10 @@ QString indent(int depth) {
 
 // ── Offset margin ──
 
-QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation) {
+QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation, int hexDigits) {
     if (isContinuation) return QStringLiteral("  \u00B7 ");
-    return QString::number(absoluteOffset, 16).toUpper() + QChar(' ');
+    return QString::number(absoluteOffset, 16).toUpper()
+               .rightJustified(hexDigits, '0') + QChar(' ');
 }
 
 // ── Struct type name (for width calculation) ──
@@ -313,8 +314,8 @@ QString fmtNodeLine(const Node& node, const Provider& prov,
     // Blank prefix for continuation lines (same width as type+sep+name+sep)
     const int prefixW = colType + colName + 2 * kSepWidth;
 
-    // Comment suffix (padded or empty)
-    QString cmtSuffix = comment.isEmpty() ? QString(COL_COMMENT, ' ')
+    // Comment suffix (only present when a comment is provided; no trailing padding)
+    QString cmtSuffix = comment.isEmpty() ? QString()
                                           : fit(comment, COL_COMMENT);
 
     // Mat4x4: subLine 0..3 = rows

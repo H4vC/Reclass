@@ -18,6 +18,7 @@ struct ComposeState {
     int                currentLine = 0;
     int                typeW       = kColType;  // global type column width (fallback)
     int                nameW       = kColName;  // global name column width (fallback)
+    int                offsetHexDigits = 8;     // hex digit tier for offset margin
     bool               baseEmitted = false;     // only first root struct shows base address
 
     // Precomputed for O(1) lookups
@@ -144,7 +145,7 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.isContinuation  = isCont;
         lm.lineKind        = isCont ? LineKind::Continuation : LineKind::Field;
         lm.nodeKind        = node.kind;
-        lm.offsetText      = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, isCont);
+        lm.offsetText      = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, isCont, state.offsetHexDigits);
         lm.markerMask      = computeMarkers(node, prov, absAddr, isCont, depth);
         lm.foldLevel       = computeFoldLevel(depth, false);
         lm.effectiveTypeW  = typeW;
@@ -191,7 +192,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::Field;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
         lm.nodeKind   = node.kind;
         lm.markerMask = (1u << M_CYCLE) | (1u << M_ERR);
         lm.foldLevel  = computeFoldLevel(depth, false);
@@ -208,7 +209,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::ArrayElementSeparator;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
         lm.nodeKind   = node.kind;
         lm.foldLevel  = computeFoldLevel(depth, false);
         lm.markerMask = 0;
@@ -234,7 +235,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::Header;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
         lm.nodeKind   = node.kind;
         lm.isRootHeader = false;
         lm.foldHead      = true;
@@ -288,10 +289,10 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.lineKind   = LineKind::Footer;
         lm.nodeKind   = node.kind;
         lm.isRootHeader = isRootHeader;  // root footer: flush left (no fold prefix)
-        lm.offsetText.clear();
         lm.foldLevel  = computeFoldLevel(depth, false);
         lm.markerMask = 0;
         int sz = tree.structSpan(node.id, &state.childMap);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr + sz, false, state.offsetHexDigits);
         state.emitLine(fmt::fmtStructFooter(node, depth, sz), lm);
     }
 
@@ -322,7 +323,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             lm.nodeId     = node.id;
             lm.depth      = depth;
             lm.lineKind   = node.collapsed ? LineKind::Field : LineKind::Header;
-            lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false);
+            lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
             lm.nodeKind   = node.kind;
             lm.foldHead      = true;
             lm.foldCollapsed = node.collapsed;
@@ -411,6 +412,19 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     for (int i = 0; i < tree.nodes.size(); i++)
         state.absOffsets[i] = tree.computeOffset(i);
 
+    // Compute hex digit tier from max absolute address
+    {
+        uint64_t maxAddr = tree.baseAddress;
+        for (int i = 0; i < tree.nodes.size(); i++) {
+            uint64_t addr = tree.baseAddress + (uint64_t)state.absOffsets[i];
+            if (addr > maxAddr) maxAddr = addr;
+        }
+        if      (maxAddr <= 0xFFFFULL)             state.offsetHexDigits = 4;
+        else if (maxAddr <= 0xFFFFFFFFULL)         state.offsetHexDigits = 8;
+        else if (maxAddr <= 0xFFFFFFFFFFFFULL)     state.offsetHexDigits = 12;
+        else                                        state.offsetHexDigits = 16;
+    }
+
     // Helper: compute the display type string for a node (for width calculation)
     auto nodeTypeName = [&](const Node& n) -> QString {
         if (n.kind == NodeKind::Array)
@@ -491,7 +505,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         lm.lineKind  = LineKind::CommandRow;
         lm.foldLevel = SC_FOLDLEVELBASE;
         lm.foldHead  = false;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress, false);
+        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress, false, state.offsetHexDigits);
         lm.markerMask = 0;
         lm.effectiveTypeW = state.typeW;
         lm.effectiveNameW = state.nameW;
@@ -510,7 +524,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         composeNode(state, tree, prov, idx, 0);
     }
 
-    return { state.text, state.meta, LayoutInfo{state.typeW, state.nameW} };
+    return { state.text, state.meta, LayoutInfo{state.typeW, state.nameW, state.offsetHexDigits} };
 }
 
 QSet<uint64_t> NodeTree::normalizePreferAncestors(const QSet<uint64_t>& ids) const {

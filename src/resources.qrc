@@ -4,7 +4,7 @@
         <file alias="chevron-down.png">icons/chevron-down.png</file>
     </qresource>
     <qresource prefix="/fonts">
-        <file alias="Iosevka-Regular.ttf">fonts/Iosevka-Regular.ttf</file>
+        <file alias="JetBrainsMono.ttf">fonts/JetBrainsMono.ttf</file>
     </qresource>
     <qresource prefix="/vsicons">
         <file alias="file.svg">vsicons/file.svg</file>

@@ -48,8 +48,8 @@ private slots:
         QCOMPARE(result.meta[2].depth, 1);
 
         // Offset text
-        QCOMPARE(result.meta[1].offsetText, QString("0"));
-        QCOMPARE(result.meta[2].offsetText, QString("4"));
+        QCOMPARE(result.meta[1].offsetText, QString("0000 "));
+        QCOMPARE(result.meta[2].offsetText, QString("0004 "));
 
         // Line 3 is root footer
         QCOMPARE(result.meta[3].lineKind, LineKind::Footer);
@@ -81,7 +81,7 @@ private slots:
 
         // Line 1: single Vec3 line, not continuation, depth 1
         QVERIFY(!result.meta[1].isContinuation);
-        QCOMPARE(result.meta[1].offsetText, QString("0"));
+        QCOMPARE(result.meta[1].offsetText, QString("0000 "));
         QCOMPARE(result.meta[1].depth, 1);
         QCOMPARE(result.meta[1].nodeKind, NodeKind::Vec3);
 
