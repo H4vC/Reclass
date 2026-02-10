@@ -1,6 +1,5 @@
 This tool helps you inspect raw bytes and interpret them as types (int, float, struct, array, etc) instead of just hex. It supports pointers/arrays so you can see the relationship between data.
-Either modify the values inside the editor or export as .h to reuse these structures in your code. The data can be live or from file, and you can switch between them effortlessly.
-
+Either modify the values inside the editor or export as .h to reuse these structures in your code.
 ![screenshot](screenshot.png)
 
 State: Plugin system is partially implemented. Some UI bugs exist. MCP server has been added as first draft. Vector/Matrix editors are not fully implemented yet.
