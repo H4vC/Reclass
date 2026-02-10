@@ -222,7 +222,7 @@ private:
 };
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("ReclassX");
+    setWindowTitle("Reclass");
     resize(1200, 800);
 
     m_mdiArea = new QMdiArea(this);
@@ -344,7 +344,7 @@ void MainWindow::createMenus() {
 
     // Help
     auto* help = menuBar()->addMenu("&Help");
-    help->addAction(makeIcon(":/vsicons/question.svg"), "&About ReclassX", this, &MainWindow::about);
+    help->addAction(makeIcon(":/vsicons/question.svg"), "&About Reclass", this, &MainWindow::about);
 }
 
 void MainWindow::createStatusBar() {
@@ -747,7 +747,7 @@ void MainWindow::redo() {
 
 void MainWindow::about() {
     QDialog dlg(this);
-    dlg.setWindowTitle("About ReclassX");
+    dlg.setWindowTitle("About Reclass");
     dlg.setFixedSize(260, 120);
     auto* lay = new QVBoxLayout(&dlg);
     lay->setContentsMargins(20, 16, 20, 16);
@@ -827,9 +827,9 @@ void MainWindow::updateWindowTitle() {
         QString name = tab.doc->filePath.isEmpty() ? "Untitled"
                        : QFileInfo(tab.doc->filePath).fileName();
         if (tab.doc->modified) name += " *";
-        setWindowTitle(name + " - ReclassX");
+        setWindowTitle(name + " - Reclass");
     } else {
-        setWindowTitle("ReclassX");
+        setWindowTitle("Reclass");
     }
 }
 
