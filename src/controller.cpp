@@ -510,31 +510,47 @@ void RcxController::connectEditor(RcxEditor* editor) {
         case EditTarget::RootClassType: {
             QString kw = text.toLower().trimmed();
             if (kw != QStringLiteral("struct") && kw != QStringLiteral("class") && kw != QStringLiteral("enum")) break;
-            for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
-                auto& n = m_doc->tree.nodes[i];
-                if (n.parentId == 0 && n.kind == NodeKind::Struct) {
-                    QString oldKw = n.resolvedClassKeyword();
+            uint64_t targetId = m_viewRootId;
+            if (targetId == 0) {
+                for (const auto& n : m_doc->tree.nodes) {
+                    if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                        targetId = n.id;
+                        break;
+                    }
+                }
+            }
+            if (targetId != 0) {
+                int idx = m_doc->tree.indexOfId(targetId);
+                if (idx >= 0) {
+                    QString oldKw = m_doc->tree.nodes[idx].resolvedClassKeyword();
                     if (oldKw != kw) {
                         m_doc->undoStack.push(new RcxCommand(this,
-                            cmd::ChangeClassKeyword{n.id, oldKw, kw}));
+                            cmd::ChangeClassKeyword{targetId, oldKw, kw}));
                     }
-                    break;
                 }
             }
             break;
         }
         case EditTarget::RootClassName: {
-            // Rename the root struct's structTypeName
+            // Rename the viewed root struct's structTypeName
             if (!text.isEmpty()) {
-                for (int i = 0; i < m_doc->tree.nodes.size(); i++) {
-                    auto& n = m_doc->tree.nodes[i];
-                    if (n.parentId == 0 && n.kind == NodeKind::Struct) {
-                        QString oldName = n.structTypeName;
+                uint64_t targetId = m_viewRootId;
+                if (targetId == 0) {
+                    for (const auto& n : m_doc->tree.nodes) {
+                        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
+                            targetId = n.id;
+                            break;
+                        }
+                    }
+                }
+                if (targetId != 0) {
+                    int idx = m_doc->tree.indexOfId(targetId);
+                    if (idx >= 0) {
+                        QString oldName = m_doc->tree.nodes[idx].structTypeName;
                         if (oldName != text) {
                             m_doc->undoStack.push(new RcxCommand(this,
-                                cmd::ChangeStructTypeName{n.id, oldName, text}));
+                                cmd::ChangeStructTypeName{targetId, oldName, text}));
                         }
-                        break;
                     }
                 }
             }
@@ -1454,7 +1470,7 @@ void RcxController::updateCommandRow() {
             QString keyword = n.resolvedClassKeyword();
             QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
             row2 = QStringLiteral("%1\u25BE %2 {")
-                .arg(keyword, className.isEmpty() ? QStringLiteral("<no name>") : className);
+                .arg(keyword, className.isEmpty() ? QStringLiteral("NoName") : className);
         }
     }
     if (row2.isEmpty()) {
@@ -1465,13 +1481,13 @@ void RcxController::updateCommandRow() {
                 QString keyword = n.resolvedClassKeyword();
                 QString className = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
                 row2 = QStringLiteral("%1\u25BE %2 {")
-                    .arg(keyword, className);
+                    .arg(keyword, className.isEmpty() ? QStringLiteral("NoName") : className);
                 break;
             }
         }
     }
     if (row2.isEmpty())
-        row2 = QStringLiteral("struct\u25BE <no class> {");
+        row2 = QStringLiteral("struct\u25BE NoName {");
 
     QString combined = QStringLiteral("[\u25B8] ") + row + QStringLiteral(" \u00B7 ") + row2;
 

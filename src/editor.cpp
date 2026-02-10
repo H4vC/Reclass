@@ -732,6 +732,14 @@ void RcxEditor::applyCommandRowPills() {
     if (rn.valid) {
         fillIndicatorCols(IND_CLASS_NAME, line, rn.start, rn.end);
     }
+
+    // Dim trailing opening brace to match the rest of the command row grey
+    for (int i = t.size() - 1; i >= 0; --i) {
+        if (t[i] == ' ' || t[i] == '\t') continue;
+        if (t[i] == '{')
+            fillIndicatorCols(IND_HEX_DIM, line, i, i + 1);
+        break;
+    }
 }
 
 // ── Shared inline-edit shutdown ──

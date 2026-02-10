@@ -496,7 +496,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     }
 
     // Emit CommandRow as line 0 (combined: source + address + root class type + name)
-    const QString cmdRowText = QStringLiteral("[\u25B8] source\u25BE \u00B7 0x0 \u00B7 struct\u25BE <no class> {");
+    const QString cmdRowText = QStringLiteral("[\u25B8] source\u25BE \u00B7 0x0 \u00B7 struct\u25BE NoName {");
     {
         LineMeta lm;
         lm.nodeIdx   = -1;
