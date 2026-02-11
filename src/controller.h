@@ -12,6 +12,9 @@
 namespace rcx {
 
 class RcxController;
+class TypeSelectorPopup;
+struct TypeEntry;
+enum class TypePopupMode;
 
 // ── Document ──
 
@@ -133,6 +136,9 @@ private:
     QVector<SavedSourceEntry> m_savedSources;
     int m_activeSourceIdx = -1;
 
+    // ── Cached type selector popup (avoids ~350ms cold-start on first show) ──
+    TypeSelectorPopup* m_cachedPopup = nullptr;
+
     // ── Auto-refresh state ──
     QTimer*         m_refreshTimer = nullptr;
     QFutureWatcher<QByteArray>* m_refreshWatcher = nullptr;
@@ -149,9 +155,9 @@ private:
     void performRealignment(uint64_t structId, int targetAlign);
     void switchToSavedSource(int idx);
     void pushSavedSourcesToEditors();
-    void showTypeSelectorPopup(RcxEditor* editor);
-    void showTypePickerPopup(RcxEditor* editor, EditTarget target, int nodeIdx, QPoint globalPos);
-    void applyTypePickerResult(EditTarget target, int nodeIdx, uint64_t selectedId, const QString& displayName);
+    void showTypePopup(RcxEditor* editor, TypePopupMode mode, int nodeIdx, QPoint globalPos);
+    void applyTypePopupResult(TypePopupMode mode, int nodeIdx, const TypeEntry& entry, const QString& fullText);
+    TypeSelectorPopup* ensurePopup(RcxEditor* editor);
 
     // ── Auto-refresh methods ──
     void setupAutoRefresh();

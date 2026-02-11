@@ -203,13 +203,18 @@ void RcxController::connectEditor(RcxEditor* editor) {
     // Type selector popup (command row chevron)
     connect(editor, &RcxEditor::typeSelectorRequested,
             this, [this, editor]() {
-        showTypeSelectorPopup(editor);
+        showTypePopup(editor, TypePopupMode::Root, -1, QPoint());
     });
 
     // Type picker popup (array element type / pointer target)
     connect(editor, &RcxEditor::typePickerRequested,
             this, [this, editor](EditTarget target, int nodeIdx, QPoint globalPos) {
-        showTypePickerPopup(editor, target, nodeIdx, globalPos);
+        TypePopupMode mode = TypePopupMode::FieldType;
+        if (target == EditTarget::ArrayElementType)
+            mode = TypePopupMode::ArrayElement;
+        else if (target == EditTarget::PointerTarget)
+            mode = TypePopupMode::PointerTarget;
+        showTypePopup(editor, mode, nodeIdx, globalPos);
     });
 
     // Inline editing signals
@@ -1505,20 +1510,118 @@ void RcxController::updateCommandRow() {
     emit selectionChanged(m_selIds.size());
 }
 
-void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
-    // Collect all root-level struct types
-    QVector<TypeEntry> types;
-    for (const auto& n : m_doc->tree.nodes) {
-        if (n.parentId == 0 && n.kind == NodeKind::Struct) {
-            TypeEntry entry;
-            entry.id = n.id;
-            entry.displayName = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
-            entry.classKeyword = n.resolvedClassKeyword();
-            types.append(entry);
+TypeSelectorPopup* RcxController::ensurePopup(RcxEditor* editor) {
+    if (!m_cachedPopup) {
+        m_cachedPopup = new TypeSelectorPopup(editor);
+        // Pre-warm: force native window creation so first visible show is fast
+        m_cachedPopup->warmUp();
+    }
+    // Disconnect previous signals so we can reconnect fresh
+    m_cachedPopup->disconnect(this);
+    return m_cachedPopup;
+}
+
+void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
+                                  int nodeIdx, QPoint globalPos) {
+    const Node* node = nullptr;
+    if (nodeIdx >= 0 && nodeIdx < m_doc->tree.nodes.size())
+        node = &m_doc->tree.nodes[nodeIdx];
+
+    // ── Build entry list based on mode ──
+    QVector<TypeEntry> entries;
+    TypeEntry currentEntry;
+    bool hasCurrent = false;
+
+    auto addPrimitives = [&](bool enabled, bool excludeStructArrayPad) {
+        for (const auto& m : kKindMeta) {
+            if (m.kind == NodeKind::Padding) continue;
+            if (excludeStructArrayPad &&
+                (m.kind == NodeKind::Struct || m.kind == NodeKind::Array))
+                continue;
+            TypeEntry e;
+            e.entryKind     = TypeEntry::Primitive;
+            e.primitiveKind = m.kind;
+            e.displayName   = QString::fromLatin1(m.typeName);
+            e.enabled       = enabled;
+            entries.append(e);
         }
+    };
+
+    auto addComposites = [&](const std::function<bool(const Node&, const TypeEntry&)>& isCurrent) {
+        for (const auto& n : m_doc->tree.nodes) {
+            if (n.parentId != 0 || n.kind != NodeKind::Struct) continue;
+            TypeEntry e;
+            e.entryKind    = TypeEntry::Composite;
+            e.structId     = n.id;
+            e.displayName  = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
+            e.classKeyword = n.resolvedClassKeyword();
+            entries.append(e);
+            if (!hasCurrent && node && isCurrent(*node, e)) {
+                currentEntry = e;
+                hasCurrent = true;
+            }
+        }
+    };
+
+    switch (mode) {
+    case TypePopupMode::Root:
+        addPrimitives(/*enabled=*/false, /*excludeStructArrayPad=*/false);
+        addComposites([&](const Node&, const TypeEntry& e) {
+            return e.structId == m_viewRootId;
+        });
+        break;
+
+    case TypePopupMode::FieldType:
+        addPrimitives(/*enabled=*/true, /*excludeStructArrayPad=*/false);
+        if (node) {
+            // Mark current primitive
+            for (auto& e : entries) {
+                if (e.entryKind == TypeEntry::Primitive && e.primitiveKind == node->kind) {
+                    currentEntry = e;
+                    hasCurrent = true;
+                    break;
+                }
+            }
+        }
+        addComposites([](const Node&, const TypeEntry&) { return false; });
+        break;
+
+    case TypePopupMode::ArrayElement:
+        addPrimitives(/*enabled=*/true, /*excludeStructArrayPad=*/true);
+        if (node) {
+            for (auto& e : entries) {
+                if (e.entryKind == TypeEntry::Primitive && e.primitiveKind == node->elementKind) {
+                    currentEntry = e;
+                    hasCurrent = true;
+                    break;
+                }
+            }
+        }
+        addComposites([](const Node& n, const TypeEntry& e) {
+            return n.elementKind == NodeKind::Struct && n.refId == e.structId;
+        });
+        break;
+
+    case TypePopupMode::PointerTarget: {
+        // "void" entry as a primitive with a special display
+        TypeEntry voidEntry;
+        voidEntry.entryKind     = TypeEntry::Primitive;
+        voidEntry.primitiveKind = NodeKind::Hex8; // unused, but needs a value
+        voidEntry.displayName   = QStringLiteral("void");
+        voidEntry.enabled       = true;
+        entries.append(voidEntry);
+        if (node && node->refId == 0) {
+            currentEntry = voidEntry;
+            hasCurrent = true;
+        }
+        addComposites([](const Node& n, const TypeEntry& e) {
+            return n.refId == e.structId;
+        });
+        break;
+    }
     }
 
-    // Get font with zoom
+    // ── Font with zoom ──
     QSettings settings("ReclassX", "ReclassX");
     QString fontName = settings.value("font", "JetBrains Mono").toString();
     QFont font(fontName, 12);
@@ -1527,26 +1630,45 @@ void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
     int zoom = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETZOOM);
     font.setPointSize(font.pointSize() + zoom);
 
-    // Position: bottom-left of the [▸] span on line 0
-    long lineStart = sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 0);
-    int lineH = (int)sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT, 0);
-    int x = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION,
-                                     0, lineStart);
-    int y = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION,
-                                     0, lineStart);
-    QPoint pos = sci->viewport()->mapToGlobal(QPoint(x, y + lineH));
+    // ── Position ──
+    QPoint pos = globalPos;
+    if (mode == TypePopupMode::Root) {
+        // Bottom-left of the [▸] span on line 0
+        long lineStart = sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, 0);
+        int lineH = (int)sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT, 0);
+        int x = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION,
+                                         0, lineStart);
+        int y = (int)sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION,
+                                         0, lineStart);
+        pos = sci->viewport()->mapToGlobal(QPoint(x, y + lineH));
+    }
 
-    auto* popup = new TypeSelectorPopup(editor);
+    // ── Configure and show popup ──
+    auto* popup = ensurePopup(editor);
     popup->setFont(font);
-    popup->setTypes(types, m_viewRootId);
+    popup->setMode(mode);
+
+    // Pass current node size for same-size sorting
+    int nodeSize = 0;
+    if (node) {
+        if (mode == TypePopupMode::ArrayElement)
+            nodeSize = sizeForKind(node->elementKind);
+        else
+            nodeSize = sizeForKind(node->kind);
+    }
+    popup->setCurrentNodeSize(nodeSize);
+
+    static const char* titles[] = { "Change root", "Change type",
+                                    "Element type", "Pointer target" };
+    popup->setTitle(QString::fromLatin1(titles[(int)mode]));
+    popup->setTypes(entries, hasCurrent ? &currentEntry : nullptr);
 
     connect(popup, &TypeSelectorPopup::typeSelected,
-            this, [this](uint64_t structId, const QString&) {
-        setViewRootId(structId);
+            this, [this, mode, nodeIdx](const TypeEntry& entry, const QString& fullText) {
+        applyTypePopupResult(mode, nodeIdx, entry, fullText);
     });
     connect(popup, &TypeSelectorPopup::createNewTypeRequested,
-            this, [this]() {
-        // Create a new root struct with no name
+            this, [this, mode, nodeIdx]() {
         Node n;
         n.kind = NodeKind::Struct;
         n.name = QString();
@@ -1554,144 +1676,57 @@ void RcxController::showTypeSelectorPopup(RcxEditor* editor) {
         n.offset = 0;
         n.id = m_doc->tree.reserveId();
         m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n}));
-        setViewRootId(n.id);
+        TypeEntry newEntry;
+        newEntry.entryKind = TypeEntry::Composite;
+        newEntry.structId  = n.id;
+        applyTypePopupResult(mode, nodeIdx, newEntry, QString());
     });
-    connect(popup, &TypeSelectorPopup::dismissed,
-            popup, &QObject::deleteLater);
 
     popup->popup(pos);
 }
 
-void RcxController::showTypePickerPopup(RcxEditor* editor, EditTarget target,
-                                        int nodeIdx, QPoint globalPos) {
-    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
-    const Node& node = m_doc->tree.nodes[nodeIdx];
-
-    QVector<TypeEntry> entries;
-    uint64_t currentId = 0;
-
-    // Sentinel range for primitive entries: UINT64_MAX - kind
-    constexpr uint64_t kPrimBase = UINT64_MAX - 256;
-    constexpr uint64_t kNoSelection = UINT64_MAX;
-    currentId = kNoSelection;
-
-    if (target == EditTarget::ArrayElementType) {
-        // Primitive types (unique synthetic id per kind)
-        for (const auto& m : kKindMeta) {
-            if (m.kind == NodeKind::Struct || m.kind == NodeKind::Array
-                || m.kind == NodeKind::Padding) continue;
-            TypeEntry e;
-            e.id = kPrimBase - (uint64_t)m.kind;
-            e.displayName = QString::fromLatin1(m.typeName);
-            entries.append(e);
-            if (m.kind == node.elementKind)
-                currentId = e.id;
-        }
-        // Struct types
-        for (const auto& n : m_doc->tree.nodes) {
-            if (n.parentId == 0 && n.kind == NodeKind::Struct) {
-                TypeEntry e;
-                e.id = n.id;
-                e.displayName = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
-                e.classKeyword = n.resolvedClassKeyword();
-                entries.append(e);
-                if (node.elementKind == NodeKind::Struct && n.id == node.refId)
-                    currentId = n.id;
-            }
-        }
-    } else if (target == EditTarget::PointerTarget) {
-        // "void" entry
-        {
-            TypeEntry e;
-            e.id = kPrimBase;  // unique sentinel for void
-            e.displayName = QStringLiteral("void");
-            entries.append(e);
-            if (node.refId == 0) currentId = e.id;
-        }
-        // Struct types
-        for (const auto& n : m_doc->tree.nodes) {
-            if (n.parentId == 0 && n.kind == NodeKind::Struct) {
-                TypeEntry e;
-                e.id = n.id;
-                e.displayName = n.structTypeName.isEmpty() ? n.name : n.structTypeName;
-                e.classKeyword = n.resolvedClassKeyword();
-                entries.append(e);
-                if (n.id == node.refId) currentId = n.id;
-            }
-        }
+void RcxController::applyTypePopupResult(TypePopupMode mode, int nodeIdx,
+                                         const TypeEntry& entry, const QString& fullText) {
+    if (mode == TypePopupMode::Root) {
+        if (entry.entryKind == TypeEntry::Composite)
+            setViewRootId(entry.structId);
+        return;
     }
 
-    // Font with zoom
-    QSettings settings("ReclassX", "ReclassX");
-    QString fontName = settings.value("font", "JetBrains Mono").toString();
-    QFont font(fontName, 12);
-    font.setFixedPitch(true);
-    auto* sci = editor->scintilla();
-    int zoom = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETZOOM);
-    font.setPointSize(font.pointSize() + zoom);
-
-    auto* popup = new TypeSelectorPopup(editor);
-    popup->setFont(font);
-    popup->setTitle(target == EditTarget::ArrayElementType
-                    ? QStringLiteral("Choose element type")
-                    : QStringLiteral("Choose pointer target"));
-    popup->setTypes(entries, currentId);
-
-    connect(popup, &TypeSelectorPopup::typeSelected,
-            this, [this, target, nodeIdx](uint64_t id, const QString& displayName) {
-        applyTypePickerResult(target, nodeIdx, id, displayName);
-    });
-    connect(popup, &TypeSelectorPopup::createNewTypeRequested,
-            this, [this, target, nodeIdx]() {
-        Node n;
-        n.kind = NodeKind::Struct;
-        n.name = QString();
-        n.parentId = 0;
-        n.offset = 0;
-        n.id = m_doc->tree.reserveId();
-        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n}));
-        applyTypePickerResult(target, nodeIdx, n.id, QString());
-    });
-    connect(popup, &TypeSelectorPopup::dismissed,
-            popup, &QObject::deleteLater);
-
-    popup->popup(globalPos);
-}
-
-void RcxController::applyTypePickerResult(EditTarget target, int nodeIdx,
-                                          uint64_t selectedId, const QString& displayName) {
     if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
     const Node& node = m_doc->tree.nodes[nodeIdx];
 
-    constexpr uint64_t kPrimBase = UINT64_MAX - 256;
+    // Parse the full text for modifiers (e.g. "int32_t[10]", "Ball*")
+    TypeSpec spec = parseTypeSpec(fullText);
 
-    if (target == EditTarget::ArrayElementType) {
-        if (selectedId >= kPrimBase) {
-            // Primitive type — resolve from displayName
-            bool ok;
-            NodeKind elemKind = kindFromTypeName(displayName, &ok);
-            if (ok && elemKind != node.elementKind) {
+    if (mode == TypePopupMode::FieldType) {
+        if (entry.entryKind == TypeEntry::Primitive) {
+            if (entry.primitiveKind != node.kind)
+                changeNodeKind(nodeIdx, entry.primitiveKind);
+        }
+    } else if (mode == TypePopupMode::ArrayElement) {
+        if (entry.entryKind == TypeEntry::Primitive) {
+            if (entry.primitiveKind != node.elementKind) {
                 m_doc->undoStack.push(new RcxCommand(this,
                     cmd::ChangeArrayMeta{node.id,
-                        node.elementKind, elemKind,
+                        node.elementKind, entry.primitiveKind,
                         node.arrayLen, node.arrayLen}));
             }
-        } else {
-            // Struct type — real node id
-            if (node.elementKind != NodeKind::Struct || node.refId != selectedId) {
+        } else if (entry.entryKind == TypeEntry::Composite) {
+            if (node.elementKind != NodeKind::Struct || node.refId != entry.structId) {
                 m_doc->undoStack.push(new RcxCommand(this,
                     cmd::ChangeArrayMeta{node.id,
                         node.elementKind, NodeKind::Struct,
                         node.arrayLen, node.arrayLen}));
-                if (node.refId != selectedId) {
+                if (node.refId != entry.structId) {
                     m_doc->undoStack.push(new RcxCommand(this,
-                        cmd::ChangePointerRef{node.id, node.refId, selectedId}));
+                        cmd::ChangePointerRef{node.id, node.refId, entry.structId}));
                 }
             }
         }
-    } else if (target == EditTarget::PointerTarget) {
-        // Map void sentinel back to refId 0
-        uint64_t realRefId = (selectedId >= kPrimBase) ? 0 : selectedId;
+    } else if (mode == TypePopupMode::PointerTarget) {
+        // "void" entry → refId 0; composite entry → real structId
+        uint64_t realRefId = (entry.entryKind == TypeEntry::Composite) ? entry.structId : 0;
         if (realRefId != node.refId) {
             m_doc->undoStack.push(new RcxCommand(this,
                 cmd::ChangePointerRef{node.id, node.refId, realRefId}));

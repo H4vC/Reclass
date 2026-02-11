@@ -97,10 +97,6 @@ RcxEditor::RcxEditor(QWidget* parent) : QWidget(parent) {
         if (m_updatingComment) return;  // Skip queuing during comment update
         if (m_editState.target == EditTarget::Value)
             QTimer::singleShot(0, this, &RcxEditor::validateEditLive);
-        if (m_editState.target == EditTarget::Type || m_editState.target == EditTarget::ArrayElementType)
-            QTimer::singleShot(0, this, &RcxEditor::updateTypeListFilter);
-        if (m_editState.target == EditTarget::PointerTarget)
-            QTimer::singleShot(0, this, &RcxEditor::updatePointerTargetFilter);
     });
 
     connect(m_sci, &QsciScintilla::selectionChanged,
@@ -1473,18 +1469,20 @@ bool RcxEditor::handleEditKey(QKeyEvent* ke) {
 bool RcxEditor::beginInlineEdit(EditTarget target, int line, int col) {
     if (target == EditTarget::TypeSelector) return false;  // handled by popup, not inline edit
 
-    // Array element type and pointer target: handled by TypeSelectorPopup, not inline edit
-    if (target == EditTarget::ArrayElementType || target == EditTarget::PointerTarget) {
+    // Type, array element type and pointer target: handled by TypeSelectorPopup, not inline edit
+    if (target == EditTarget::Type || target == EditTarget::ArrayElementType || target == EditTarget::PointerTarget) {
         if (line < 0) {
             int c;
             m_sci->getCursorPosition(&line, &c);
         }
         auto* lm = metaForLine(line);
         if (!lm) return false;
-        long lineStart = m_sci->SendScintilla(QsciScintillaBase::SCI_POSITIONFROMLINE, (unsigned long)line);
+        // Position popup at the type column start
+        ColumnSpan ts = typeSpan(*lm);
+        long typePos = posFromCol(m_sci, line, ts.valid ? ts.start : 0);
         int lineH = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_TEXTHEIGHT, (unsigned long)line);
-        int x = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION, (unsigned long)0, lineStart);
-        int y = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION, (unsigned long)0, lineStart);
+        int x = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTXFROMPOSITION, (unsigned long)0, typePos);
+        int y = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_POINTYFROMPOSITION, (unsigned long)0, typePos);
         QPoint pos = m_sci->viewport()->mapToGlobal(QPoint(x, y + lineH));
         emit typePickerRequested(target, lm->nodeIdx, pos);
         return true;
@@ -1657,12 +1655,10 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line, int col) {
     if (target == EditTarget::Value)
         setEditComment(QStringLiteral("Enter=Save Esc=Cancel"));
 
-    if (target == EditTarget::Type || target == EditTarget::ArrayElementType)
-        QTimer::singleShot(0, this, &RcxEditor::showTypeAutocomplete);
+    // Note: Type, ArrayElementType, PointerTarget are handled by TypeSelectorPopup
+    // and exit early above (never reach here).
     if (target == EditTarget::Source)
         QTimer::singleShot(0, this, &RcxEditor::showSourcePicker);
-    if (target == EditTarget::PointerTarget)
-        QTimer::singleShot(0, this, &RcxEditor::showPointerTargetPicker);
     if (target == EditTarget::RootClassType) {
         QTimer::singleShot(0, this, [this]() {
             if (!m_editState.active || m_editState.target != EditTarget::RootClassType) return;
