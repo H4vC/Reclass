@@ -1,8 +1,14 @@
-This tool helps you inspect raw bytes and interpret them as types (int, float, struct, array, etc) instead of just hex. It supports pointers/arrays so you can see the relationship between data.
-Either modify the values inside the editor or export as .h to reuse these structures in your code.
+This tool helps you inspect raw bytes and interpret them as types (structs, arrays, primitives, pointers, padding) instead of just hex. It is essentially a debugging tool for figuring out unknown data structures either runtime or from some static source.
+
 ![screenshot](screenshot.png)
 
-State: Plugin system is partially implemented. Some UI bugs exist. MCP server has been added as first draft. Vector/Matrix editors are not fully implemented yet.
+## State
+
+- MCP (Model Context Protocol) bridge (McpBridge) added. Server starts by default but can be stopped in File menu. Exposes the tools functionality and also has UI fallback if something new has been introduced.
+- Plugin system is partially implemented. Some UI bugs exist.
+- Vector/Matrix improvements have been made but are not entirely complete.
+- When attached to a live process memory is read on a background thread and changed bytes get highlighted in real time.
+- Every edit goes through a full undo/redo system.
 
 ## Build
 
