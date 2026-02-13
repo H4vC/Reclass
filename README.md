@@ -17,7 +17,6 @@ This tool helps you inspect raw bytes and interpret them as types (structs, arra
   ```
 - Plugin system is partially implemented. Some UI bugs exist.
 - Vector/Matrix improvements have been made but are not entirely complete.
-- When attached to a live process memory is read on a background thread and changed bytes get highlighted in real time.
 - Every edit goes through a full undo/redo system.
 
 ## Build
