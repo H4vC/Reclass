@@ -14,8 +14,8 @@ public:
     explicit TitleBarWidget(QWidget* parent = nullptr);
 
     QMenuBar* menuBar() const { return m_menuBar; }
-    void setTitle(const QString& title);
     void applyTheme(const Theme& theme);
+    void setShowIcon(bool show);
 
     void updateMaximizeIcon();
 
@@ -25,8 +25,8 @@ protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
+    QLabel*      m_appLabel   = nullptr;
     QMenuBar*    m_menuBar    = nullptr;
-    QLabel*      m_titleLabel = nullptr;
     QToolButton* m_btnMin     = nullptr;
     QToolButton* m_btnMax     = nullptr;
     QToolButton* m_btnClose   = nullptr;

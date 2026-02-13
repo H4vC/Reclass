@@ -31,14 +31,17 @@ signals:
 
 private:
     ThemeManager();
-    QVector<Theme> m_builtIn;
+    QVector<Theme> m_builtIn;          // built-in themes (possibly overridden)
+    QVector<Theme> m_builtInDefaults;  // originals loaded from disk
     QVector<Theme> m_user;
     int m_currentIdx = 0;
 
     int builtInCount() const { return m_builtIn.size(); }
-    QString themesDir() const;
+    void loadBuiltInThemes();
+    QString builtInDir() const;
+    QString userDir() const;
     bool m_previewing = false;
-    Theme m_savedTheme;   // stashed current theme during preview
+    Theme m_savedTheme;
 };
 
 } // namespace rcx

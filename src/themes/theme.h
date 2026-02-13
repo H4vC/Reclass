@@ -48,9 +48,18 @@ struct Theme {
 
     QJsonObject toJson() const;
     static Theme fromJson(const QJsonObject& obj);
-
-    static Theme reclassDark();
-    static Theme warm();
 };
+
+// ── Shared field metadata (serialization + editor UI) ──
+
+struct ThemeFieldMeta {
+    const char*    key;     // JSON key
+    const char*    label;   // display label
+    const char*    group;   // section group name
+    QColor Theme::*ptr;
+};
+
+extern const ThemeFieldMeta kThemeFields[];
+extern const int kThemeFieldCount;
 
 } // namespace rcx

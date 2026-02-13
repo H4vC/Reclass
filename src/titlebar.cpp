@@ -1,4 +1,5 @@
 #include "titlebar.h"
+#include "themes/thememanager.h"
 #include <QMouseEvent>
 #include <QPainter>
 #include <QStyle>
@@ -8,7 +9,7 @@ namespace rcx {
 
 TitleBarWidget::TitleBarWidget(QWidget* parent)
     : QWidget(parent)
-    , m_theme(Theme::reclassDark())
+    , m_theme(ThemeManager::instance().current())
 {
     setFixedHeight(32);
 
@@ -16,27 +17,17 @@ TitleBarWidget::TitleBarWidget(QWidget* parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    // App icon
-    auto* iconLabel = new QLabel(this);
-    iconLabel->setPixmap(QPixmap(":/icons/class.png").scaled(24, 24, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    iconLabel->setFixedSize(32, 32);
-    iconLabel->setAlignment(Qt::AlignCenter);
-    iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-    layout->addWidget(iconLabel);
+    // App name
+    m_appLabel = new QLabel(QStringLiteral("Reclass"), this);
+    m_appLabel->setContentsMargins(10, 0, 4, 0);
+    m_appLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    layout->addWidget(m_appLabel);
 
     // Menu bar
     m_menuBar = new QMenuBar(this);
     m_menuBar->setNativeMenuBar(false);
     m_menuBar->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
     layout->addWidget(m_menuBar);
-
-    layout->addStretch();
-
-    // Title label (centered, transparent to mouse so drag works through it)
-    m_titleLabel = new QLabel(this);
-    m_titleLabel->setAlignment(Qt::AlignCenter);
-    m_titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
-    layout->addWidget(m_titleLabel);
 
     layout->addStretch();
 
@@ -70,10 +61,6 @@ QToolButton* TitleBarWidget::makeChromeButton(const QString& iconPath) {
     return btn;
 }
 
-void TitleBarWidget::setTitle(const QString& title) {
-    m_titleLabel->setText(title);
-}
-
 void TitleBarWidget::applyTheme(const Theme& theme) {
     m_theme = theme;
 
@@ -83,9 +70,9 @@ void TitleBarWidget::applyTheme(const Theme& theme) {
     pal.setColor(QPalette::Window, theme.background);
     setPalette(pal);
 
-    // Title text
-    m_titleLabel->setStyleSheet(
-        QStringLiteral("QLabel { color: %1; font-size: 12px; }")
+    // App label
+    m_appLabel->setStyleSheet(
+        QStringLiteral("QLabel { color: %1; font-size: 12px; font-weight: bold; }")
             .arg(theme.textDim.name()));
 
     // Menu bar styling — transparent background, themed text
@@ -111,6 +98,19 @@ void TitleBarWidget::applyTheme(const Theme& theme) {
         "QToolButton:hover { background: #c42b1c; }"));
 
     update();
+}
+
+void TitleBarWidget::setShowIcon(bool show) {
+    if (show) {
+        m_appLabel->setText(QString());
+        m_appLabel->setPixmap(QIcon(":/icons/class.png").pixmap(16, 16));
+    } else {
+        m_appLabel->setPixmap(QPixmap());
+        m_appLabel->setText(QStringLiteral("Reclass"));
+        m_appLabel->setStyleSheet(
+            QStringLiteral("QLabel { color: %1; font-size: 12px; font-weight: bold; }")
+                .arg(m_theme.textDim.name()));
+    }
 }
 
 void TitleBarWidget::updateMaximizeIcon() {

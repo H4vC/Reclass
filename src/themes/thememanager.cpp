@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QStandardPaths>
+#include <QCoreApplication>
 
 namespace rcx {
 
@@ -13,17 +14,39 @@ ThemeManager& ThemeManager::instance() {
 }
 
 ThemeManager::ThemeManager() {
-    m_builtIn.append(Theme::reclassDark());
-    m_builtIn.append(Theme::warm());
+    loadBuiltInThemes();
     loadUserThemes();
 
     QSettings settings("Reclass", "Reclass");
-    QString saved = settings.value("theme", m_builtIn[0].name).toString();
+    QString fallback = m_builtIn.isEmpty() ? QString() : m_builtIn[0].name;
+    QString saved = settings.value("theme", fallback).toString();
     auto all = themes();
     for (int i = 0; i < all.size(); i++) {
         if (all[i].name == saved) { m_currentIdx = i; break; }
     }
 }
+
+// ── Load built-in themes from JSON files next to the executable ──
+
+QString ThemeManager::builtInDir() const {
+    return QCoreApplication::applicationDirPath() + "/themes";
+}
+
+void ThemeManager::loadBuiltInThemes() {
+    m_builtIn.clear();
+    QDir dir(builtInDir());
+    if (!dir.exists()) return;
+    for (const QString& name : dir.entryList({"*.json"}, QDir::Files, QDir::Name)) {
+        QFile f(dir.filePath(name));
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        QJsonDocument jdoc = QJsonDocument::fromJson(f.readAll());
+        if (jdoc.isObject())
+            m_builtIn.append(Theme::fromJson(jdoc.object()));
+    }
+    m_builtInDefaults = m_builtIn;
+}
+
+// ── themes / current ──
 
 QVector<Theme> ThemeManager::themes() const {
     QVector<Theme> all = m_builtIn;
@@ -37,7 +60,10 @@ const Theme& ThemeManager::current() const {
     int userIdx = m_currentIdx - m_builtIn.size();
     if (userIdx >= 0 && userIdx < m_user.size())
         return m_user[userIdx];
-    return m_builtIn[0];
+    if (!m_builtIn.isEmpty())
+        return m_builtIn[0];
+    static const Theme empty;
+    return empty;
 }
 
 void ThemeManager::setCurrent(int index) {
@@ -55,17 +81,20 @@ void ThemeManager::addTheme(const Theme& theme) {
 }
 
 void ThemeManager::updateTheme(int index, const Theme& theme) {
+    m_previewing = false;  // commit any active preview
+
     if (index < builtInCount()) {
-        // Can't overwrite built-in; save as user theme instead
-        m_user.append(theme);
+        m_builtIn[index] = theme;
+        m_currentIdx = index;
     } else {
         int ui = index - builtInCount();
         if (ui >= 0 && ui < m_user.size())
             m_user[ui] = theme;
     }
     saveUserThemes();
-    if (index == m_currentIdx)
-        emit themeChanged(current());
+    QSettings settings("Reclass", "Reclass");
+    settings.setValue("theme", current().name);
+    emit themeChanged(current());
 }
 
 void ThemeManager::removeTheme(int index) {
@@ -82,7 +111,9 @@ void ThemeManager::removeTheme(int index) {
     saveUserThemes();
 }
 
-QString ThemeManager::themesDir() const {
+// ── User theme persistence ──
+
+QString ThemeManager::userDir() const {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                   + "/themes";
     QDir().mkpath(dir);
@@ -91,37 +122,69 @@ QString ThemeManager::themesDir() const {
 
 void ThemeManager::loadUserThemes() {
     m_user.clear();
-    QDir dir(themesDir());
+    QDir dir(userDir());
     for (const QString& name : dir.entryList({"*.json"}, QDir::Files)) {
         QFile f(dir.filePath(name));
         if (!f.open(QIODevice::ReadOnly)) continue;
         QJsonDocument jdoc = QJsonDocument::fromJson(f.readAll());
-        if (jdoc.isObject())
-            m_user.append(Theme::fromJson(jdoc.object()));
+        if (!jdoc.isObject()) continue;
+        Theme t = Theme::fromJson(jdoc.object());
+
+        // If this overrides a built-in (same name), replace it in-place
+        bool isOverride = false;
+        for (int i = 0; i < m_builtIn.size(); i++) {
+            if (m_builtIn[i].name == t.name) {
+                m_builtIn[i] = t;
+                isOverride = true;
+                break;
+            }
+        }
+        if (!isOverride)
+            m_user.append(t);
     }
 }
 
 void ThemeManager::saveUserThemes() const {
-    QString dir = themesDir();
-    // Remove old files
+    QString dir = userDir();
     QDir d(dir);
     for (const QString& name : d.entryList({"*.json"}, QDir::Files))
         d.remove(name);
-    // Write current user themes
+
+    // Save modified built-ins (compare against on-disk originals)
+    for (int i = 0; i < m_builtIn.size() && i < m_builtInDefaults.size(); i++) {
+        if (m_builtIn[i].toJson() != m_builtInDefaults[i].toJson()) {
+            QString filename = m_builtIn[i].name.toLower().replace(' ', '_') + ".json";
+            QFile f(dir + "/" + filename);
+            if (f.open(QIODevice::WriteOnly))
+                f.write(QJsonDocument(m_builtIn[i].toJson()).toJson(QJsonDocument::Indented));
+        }
+    }
+
+    // Save user themes
     for (int i = 0; i < m_user.size(); i++) {
         QString filename = m_user[i].name.toLower().replace(' ', '_') + ".json";
         QFile f(dir + "/" + filename);
-        if (!f.open(QIODevice::WriteOnly)) continue;
-        f.write(QJsonDocument(m_user[i].toJson()).toJson(QJsonDocument::Indented));
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(m_user[i].toJson()).toJson(QJsonDocument::Indented));
     }
 }
 
 QString ThemeManager::themeFilePath(int index) const {
-    if (index < builtInCount()) return {};
+    if (index < builtInCount()) {
+        // Built-in has a user override file only if modified
+        if (index < m_builtInDefaults.size()
+            && m_builtIn[index].toJson() != m_builtInDefaults[index].toJson()) {
+            QString filename = m_builtIn[index].name.toLower().replace(' ', '_') + ".json";
+            return userDir() + "/" + filename;
+        }
+        // Show the built-in source file
+        QString filename = m_builtIn[index].name.toLower().replace(' ', '_') + ".json";
+        return builtInDir() + "/" + filename;
+    }
     int ui = index - builtInCount();
     if (ui < 0 || ui >= m_user.size()) return {};
     QString filename = m_user[ui].name.toLower().replace(' ', '_') + ".json";
-    return themesDir() + "/" + filename;
+    return userDir() + "/" + filename;
 }
 
 void ThemeManager::previewTheme(const Theme& theme) {

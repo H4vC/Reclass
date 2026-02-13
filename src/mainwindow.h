@@ -107,6 +107,7 @@ private:
     SplitPane createSplitPane(TabState& tab);
     void applyTheme(const Theme& theme);
     void applyTabWidgetStyle(QTabWidget* tw);
+    void styleTabCloseButtons();
     SplitPane* findPaneByTabWidget(QTabWidget* tw);
     SplitPane* findActiveSplitPane();
     RcxEditor* activePaneEditor();

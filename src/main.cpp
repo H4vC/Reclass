@@ -288,20 +288,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         const auto& t = ThemeManager::instance().current();
         m_mdiArea->setStyleSheet(QStringLiteral(
             "QTabBar::tab {"
-            "  background: %1; color: %2; padding: 6px 16px; border: none;"
+            "  background: %1; color: %2; padding: 0px 16px; border: none; height: 24px;"
             "}"
             "QTabBar::tab:selected { color: %3; background: %4; }"
             "QTabBar::tab:hover { color: %3; background: %5; }")
             .arg(t.background.name(), t.textMuted.name(), t.text.name(),
                  t.backgroundAlt.name(), t.hover.name()));
-    }
-    {
-        QSettings settings("Reclass", "Reclass");
-        QString fontName = settings.value("font", "JetBrains Mono").toString();
-        QFont f(fontName, 12);
-        f.setFixedPitch(true);
-        if (auto* tb = m_mdiArea->findChild<QTabBar*>())
-            tb->setFont(f);
     }
     setCentralWidget(m_mdiArea);
 
@@ -410,6 +402,15 @@ void MainWindow::createMenus() {
     themeMenu->addAction("Edit Theme...", this, &MainWindow::editTheme);
 
     view->addSeparator();
+    auto* actShowIcon = view->addAction("Show &Icon");
+    actShowIcon->setCheckable(true);
+    actShowIcon->setChecked(settings.value("showIcon", false).toBool());
+    if (actShowIcon->isChecked()) m_titleBar->setShowIcon(true);
+    connect(actShowIcon, &QAction::toggled, this, [this](bool checked) {
+        m_titleBar->setShowIcon(checked);
+        QSettings s("Reclass", "Reclass");
+        s.setValue("showIcon", checked);
+    });
     view->addAction(m_workspaceDock->toggleViewAction());
 
     // Node
@@ -432,6 +433,7 @@ void MainWindow::createMenus() {
 void MainWindow::createStatusBar() {
     m_statusLabel = new QLabel("Ready");
     m_statusLabel->setContentsMargins(10, 0, 0, 0);
+    statusBar()->setContentsMargins(0, 4, 0, 4);
     statusBar()->addWidget(m_statusLabel, 1);
     {
         const auto& t = ThemeManager::instance().current();
@@ -441,20 +443,9 @@ void MainWindow::createStatusBar() {
         statusBar()->setPalette(sbPal);
         statusBar()->setAutoFillBackground(true);
     }
-
-    QSettings settings("Reclass", "Reclass");
-    QString fontName = settings.value("font", "JetBrains Mono").toString();
-    QFont f(fontName, 12);
-    f.setFixedPitch(true);
-    statusBar()->setFont(f);
 }
 
 void MainWindow::applyTabWidgetStyle(QTabWidget* tw) {
-    QSettings settings("Reclass", "Reclass");
-    QString fontName = settings.value("font", "JetBrains Mono").toString();
-    QFont tabFont(fontName, 12);
-    tabFont.setFixedPitch(true);
-    tw->tabBar()->setFont(tabFont);
     const auto& t = ThemeManager::instance().current();
     tw->setStyleSheet(QStringLiteral(
         "QTabWidget::pane { border: none; }"
@@ -466,6 +457,37 @@ void MainWindow::applyTabWidgetStyle(QTabWidget* tw) {
         .arg(t.background.name(), t.textMuted.name(),
              t.text.name(), t.hover.name()));
     tw->tabBar()->setExpanding(false);
+}
+
+void MainWindow::styleTabCloseButtons() {
+    auto* tabBar = m_mdiArea->findChild<QTabBar*>();
+    if (!tabBar) return;
+
+    const auto& t = ThemeManager::instance().current();
+    QString style = QStringLiteral(
+        "QToolButton { color: %1; border: none; padding: 0px 4px; font-size: 12px; }"
+        "QToolButton:hover { color: %2; }")
+        .arg(t.textDim.name(), t.indHoverSpan.name());
+
+    auto subs = m_mdiArea->subWindowList();
+    for (int i = 0; i < tabBar->count() && i < subs.size(); i++) {
+        auto* existing = qobject_cast<QToolButton*>(
+            tabBar->tabButton(i, QTabBar::RightSide));
+        if (existing && existing->text() == QStringLiteral("\u2715")) {
+            // Already our button, just restyle
+            existing->setStyleSheet(style);
+            continue;
+        }
+        // Replace with ✕ text button
+        auto* btn = new QToolButton(tabBar);
+        btn->setText(QStringLiteral("\u2715"));
+        btn->setAutoRaise(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setStyleSheet(style);
+        QMdiSubWindow* sub = subs[i];
+        connect(btn, &QToolButton::clicked, sub, &QMdiSubWindow::close);
+        tabBar->setTabButton(i, QTabBar::RightSide, btn);
+    }
 }
 
 MainWindow::SplitPane MainWindow::createSplitPane(TabState& tab) {
@@ -656,6 +678,7 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
 
     ctrl->refresh();
     rebuildWorkspaceModel();
+    styleTabCloseButtons();
     return sub;
 }
 
@@ -762,7 +785,41 @@ void MainWindow::newDocument() {
 }
 
 void MainWindow::selfTest() {
+    // Tab 1: Ball demo
     project_new();
+
+    // Tab 2: Unnamed struct with hex64 fields
+    {
+        auto* doc = new RcxDocument(this);
+        QByteArray data(256, '\0');
+        doc->loadData(data);
+        doc->tree.baseAddress = 0x00400000;
+
+        Node s;
+        s.kind = NodeKind::Struct;
+        s.name = "instance";
+        s.structTypeName = "Unnamed";
+        s.parentId = 0;
+        s.offset = 0;
+        int si = doc->tree.addNode(s);
+        uint64_t sId = doc->tree.nodes[si].id;
+
+        for (int i = 0; i < 16; i++) {
+            Node n;
+            n.kind = NodeKind::Hex64;
+            n.name = QStringLiteral("field_%1").arg(i * 8, 2, 16, QChar('0'));
+            n.parentId = sId;
+            n.offset = i * 8;
+            doc->tree.addNode(n);
+        }
+
+        createTab(doc);
+        rebuildWorkspaceModel();
+    }
+
+    // Focus Ball tab
+    if (auto* first = m_mdiArea->subWindowList().value(0))
+        m_mdiArea->setActiveSubWindow(first);
 }
 
 void MainWindow::openFile() {
@@ -930,12 +987,15 @@ void MainWindow::applyTheme(const Theme& theme) {
     // MDI area tabs
     m_mdiArea->setStyleSheet(QStringLiteral(
         "QTabBar::tab {"
-        "  background: %1; color: %2; padding: 6px 16px; border: none;"
+        "  background: %1; color: %2; padding: 0px 16px; border: none; height: 24px;"
         "}"
         "QTabBar::tab:selected { color: %3; background: %4; }"
         "QTabBar::tab:hover { color: %3; background: %5; }")
         .arg(theme.background.name(), theme.textMuted.name(), theme.text.name(),
              theme.backgroundAlt.name(), theme.hover.name()));
+
+    // Re-style ✕ close buttons on MDI tabs
+    styleTabCloseButtons();
 
     // Status bar
     {
@@ -958,16 +1018,7 @@ void MainWindow::editTheme() {
     int idx = tm.currentIndex();
     ThemeEditor dlg(idx, this);
     if (dlg.exec() == QDialog::Accepted) {
-        tm.revertPreview();
-        int selectedIdx = dlg.selectedIndex();
-        Theme edited = dlg.result();
-        // Switch to selected theme first (if changed)
-        if (selectedIdx != idx && selectedIdx >= 0 && selectedIdx < tm.themes().size())
-            tm.setCurrent(selectedIdx);
-        // Apply edits
-        int applyIdx = selectedIdx >= 0 ? selectedIdx : idx;
-        if (applyIdx >= 0 && applyIdx < tm.themes().size())
-            tm.updateTheme(applyIdx, edited);
+        tm.updateTheme(dlg.selectedIndex(), dlg.result());
     } else {
         tm.revertPreview();
     }
@@ -991,9 +1042,6 @@ void MainWindow::setEditorFont(const QString& fontName) {
                 }
                 pane.rendered->setMarginsFont(f);
             }
-            // Update per-pane tab bar font
-            if (pane.tabWidget)
-                applyTabWidgetStyle(pane.tabWidget);
         }
     }
     // Sync workspace tree font
@@ -1001,11 +1049,6 @@ void MainWindow::setEditorFont(const QString& fontName) {
         m_workspaceTree->setFont(f);
     // Sync status bar font
     statusBar()->setFont(f);
-    // Sync MDI tab bar font
-    if (auto* tb = m_mdiArea->findChild<QTabBar*>())
-        tb->setFont(f);
-    // Sync menu bar / menu font via global stylesheet
-    applyGlobalTheme(ThemeManager::instance().current());
 }
 
 RcxController* MainWindow::activeController() const {
@@ -1045,7 +1088,6 @@ void MainWindow::updateWindowTitle() {
         title = "Reclass";
     }
     setWindowTitle(title);
-    m_titleBar->setTitle(title);
 }
 
 // ── Rendered view setup ──

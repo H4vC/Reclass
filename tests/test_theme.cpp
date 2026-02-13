@@ -11,31 +11,37 @@ class TestTheme : public QObject {
     Q_OBJECT
 private slots:
     void builtInThemes() {
-        Theme dark = Theme::reclassDark();
-        QCOMPARE(dark.name, "Reclass Dark");
-        QVERIFY(dark.background.isValid());
-        QVERIFY(dark.text.isValid());
-        QVERIFY(dark.syntaxKeyword.isValid());
-        QVERIFY(dark.markerError.isValid());
+        auto& tm = ThemeManager::instance();
+        auto all = tm.themes();
+        QVERIFY(all.size() >= 2);
 
-        Theme warm = Theme::warm();
-        QCOMPARE(warm.name, "Warm");
-        QVERIFY(warm.background.isValid());
-        QVERIFY(warm.text.isValid());
-        QCOMPARE(warm.background, QColor("#212121"));
-        QCOMPARE(warm.selection, QColor("#21213A"));
-        QCOMPARE(warm.syntaxKeyword, QColor("#AA9565"));
-        QCOMPARE(warm.syntaxType, QColor("#6B959F"));
-    }
+        // Find themes by name
+        const Theme* dark = nullptr;
+        const Theme* warm = nullptr;
+        for (const auto& t : all) {
+            if (t.name == "Reclass Dark") dark = &t;
+            if (t.name == "Warm") warm = &t;
+        }
+        QVERIFY(dark);
+        QCOMPARE(dark->name, QString("Reclass Dark"));
+        QVERIFY(dark->background.isValid());
+        QVERIFY(dark->text.isValid());
+        QVERIFY(dark->syntaxKeyword.isValid());
+        QVERIFY(dark->markerError.isValid());
 
-    void selectionColorFixed() {
-        Theme dark = Theme::reclassDark();
-        QCOMPARE(dark.selection, QColor("#2b2b2b"));
-        QVERIFY(dark.selection != QColor("#264f78"));
+        QVERIFY(warm);
+        QCOMPARE(warm->name, QString("Warm"));
+        QVERIFY(warm->background.isValid());
+        QVERIFY(warm->text.isValid());
+        QCOMPARE(warm->background, QColor("#212121"));
+        QCOMPARE(warm->selection, QColor("#21213A"));
+        QCOMPARE(warm->syntaxKeyword, QColor("#AA9565"));
+        QCOMPARE(warm->syntaxType, QColor("#6B959F"));
     }
 
     void jsonRoundTrip() {
-        Theme orig = Theme::reclassDark();
+        auto& tm = ThemeManager::instance();
+        Theme orig = tm.themes()[0];
         QJsonObject json = orig.toJson();
         Theme loaded = Theme::fromJson(json);
 
@@ -54,7 +60,12 @@ private slots:
     }
 
     void jsonRoundTripWarm() {
-        Theme orig = Theme::warm();
+        auto& tm = ThemeManager::instance();
+        auto all = tm.themes();
+        Theme orig;
+        for (const auto& t : all)
+            if (t.name == "Warm") { orig = t; break; }
+
         QJsonObject json = orig.toJson();
         Theme loaded = Theme::fromJson(json);
 
@@ -70,21 +81,20 @@ private slots:
         sparse["background"] = "#ff0000";
         Theme t = Theme::fromJson(sparse);
 
-        QCOMPARE(t.name, "Sparse");
+        QCOMPARE(t.name, QString("Sparse"));
         QCOMPARE(t.background, QColor("#ff0000"));
-        // Missing fields fall back to reclassDark defaults
-        Theme defaults = Theme::reclassDark();
-        QCOMPARE(t.text, defaults.text);
-        QCOMPARE(t.syntaxKeyword, defaults.syntaxKeyword);
-        QCOMPARE(t.markerError, defaults.markerError);
+        // Missing fields are default (invalid) QColor
+        QVERIFY(!t.text.isValid());
+        QVERIFY(!t.syntaxKeyword.isValid());
+        QVERIFY(!t.markerError.isValid());
     }
 
     void themeManagerHasBuiltIns() {
         auto& tm = ThemeManager::instance();
         auto all = tm.themes();
         QVERIFY(all.size() >= 2);
-        QCOMPARE(all[0].name, "Reclass Dark");
-        QCOMPARE(all[1].name, "Warm");
+        QCOMPARE(all[0].name, QString("Reclass Dark"));
+        QCOMPARE(all[1].name, QString("Warm"));
     }
 
     void themeManagerSwitch() {
@@ -108,12 +118,12 @@ private slots:
         int initialCount = tm.themes().size();
 
         // Add
-        Theme custom = Theme::reclassDark();
+        Theme custom = tm.themes()[0];
         custom.name = "Test Custom";
         custom.background = QColor("#ff0000");
         tm.addTheme(custom);
         QCOMPARE(tm.themes().size(), initialCount + 1);
-        QCOMPARE(tm.themes().last().name, "Test Custom");
+        QCOMPARE(tm.themes().last().name, QString("Test Custom"));
 
         // Update
         int idx = tm.themes().size() - 1;

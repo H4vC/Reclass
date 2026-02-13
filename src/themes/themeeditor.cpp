@@ -6,6 +6,7 @@
 #include <QDialogButtonBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <cstring>
 
 namespace rcx {
 
@@ -70,7 +71,7 @@ ThemeEditor::ThemeEditor(int themeIndex, QWidget* parent)
         : QStringLiteral("File: %1").arg(path));
     mainLayout->addWidget(m_fileInfoLabel);
 
-    // ── Scrollable area for swatches + contrast ──
+    // ── Scrollable area for swatches ──
     auto* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -79,84 +80,49 @@ ThemeEditor::ThemeEditor(int themeIndex, QWidget* parent)
     scrollLayout->setContentsMargins(0, 0, 6, 0);  // right margin for scrollbar
     scrollLayout->setSpacing(2);
 
-    // ── Color swatches ──
-    struct FieldDef { const char* label; QColor Theme::*ptr; };
+    // ── Color swatches (driven by kThemeFields) ──
+    const char* currentGroup = nullptr;
+    for (int fi = 0; fi < kThemeFieldCount; fi++) {
+        const auto& f = kThemeFields[fi];
 
-    auto addGroup = [&](const QString& title, std::initializer_list<FieldDef> fields) {
-        scrollLayout->addWidget(makeSectionLabel(title));
-        for (const auto& f : fields) {
-            int idx = m_swatches.size();
-
-            auto* row = new QHBoxLayout;
-            row->setSpacing(6);
-            row->setContentsMargins(8, 1, 0, 1);
-
-            auto* lbl = new QLabel(QString::fromLatin1(f.label));
-            lbl->setFixedWidth(120);
-            row->addWidget(lbl);
-
-            auto* swatchBtn = new QPushButton;
-            swatchBtn->setFixedSize(32, 18);
-            swatchBtn->setCursor(Qt::PointingHandCursor);
-            connect(swatchBtn, &QPushButton::clicked, this, [this, idx]() { pickColor(idx); });
-            row->addWidget(swatchBtn);
-
-            auto* hexLbl = new QLabel;
-            hexLbl->setFixedWidth(60);
-            hexLbl->setStyleSheet(QStringLiteral("color: #aaa; font-size: 10px;"));
-            row->addWidget(hexLbl);
-
-            row->addStretch();
-
-            SwatchEntry se;
-            se.label = f.label;
-            se.field = f.ptr;
-            se.swatchBtn = swatchBtn;
-            se.hexLabel = hexLbl;
-            m_swatches.append(se);
-
-            scrollLayout->addLayout(row);
+        // Section header on group change
+        if (!currentGroup || std::strcmp(currentGroup, f.group) != 0) {
+            scrollLayout->addWidget(makeSectionLabel(QString::fromLatin1(f.group)));
+            currentGroup = f.group;
         }
-    };
 
-    addGroup("Chrome", {
-        {"Background",     &Theme::background},
-        {"Background Alt", &Theme::backgroundAlt},
-        {"Surface",        &Theme::surface},
-        {"Border",         &Theme::border},
-        {"Border Focused", &Theme::borderFocused},
-        {"Button",         &Theme::button},
-    });
-    addGroup("Text", {
-        {"Text",        &Theme::text},
-        {"Text Dim",    &Theme::textDim},
-        {"Text Muted",  &Theme::textMuted},
-        {"Text Faint",  &Theme::textFaint},
-    });
-    addGroup("Interactive", {
-        {"Hover",       &Theme::hover},
-        {"Selected",    &Theme::selected},
-        {"Selection",   &Theme::selection},
-    });
-    addGroup("Syntax", {
-        {"Keyword",      &Theme::syntaxKeyword},
-        {"Number",       &Theme::syntaxNumber},
-        {"String",       &Theme::syntaxString},
-        {"Comment",      &Theme::syntaxComment},
-        {"Preprocessor", &Theme::syntaxPreproc},
-        {"Type",         &Theme::syntaxType},
-    });
-    addGroup("Indicators", {
-        {"Hover Span",    &Theme::indHoverSpan},
-        {"Cmd Pill",      &Theme::indCmdPill},
-        {"Data Changed",  &Theme::indDataChanged},
-        {"Hint Green",    &Theme::indHintGreen},
-    });
-    addGroup("Markers", {
-        {"Pointer",  &Theme::markerPtr},
-        {"Cycle",    &Theme::markerCycle},
-        {"Error",    &Theme::markerError},
-    });
+        int idx = m_swatches.size();
+
+        auto* row = new QHBoxLayout;
+        row->setSpacing(6);
+        row->setContentsMargins(8, 1, 0, 1);
+
+        auto* lbl = new QLabel(QString::fromLatin1(f.label));
+        lbl->setFixedWidth(120);
+        row->addWidget(lbl);
+
+        auto* swatchBtn = new QPushButton;
+        swatchBtn->setFixedSize(32, 18);
+        swatchBtn->setCursor(Qt::PointingHandCursor);
+        connect(swatchBtn, &QPushButton::clicked, this, [this, idx]() { pickColor(idx); });
+        row->addWidget(swatchBtn);
+
+        auto* hexLbl = new QLabel;
+        hexLbl->setFixedWidth(60);
+        hexLbl->setStyleSheet(QStringLiteral("color: #aaa; font-size: 10px;"));
+        row->addWidget(hexLbl);
+
+        row->addStretch();
+
+        SwatchEntry se;
+        se.label = f.label;
+        se.field = f.ptr;
+        se.swatchBtn = swatchBtn;
+        se.hexLabel = hexLbl;
+        m_swatches.append(se);
+
+        scrollLayout->addLayout(row);
+    }
 
     scrollLayout->addStretch();
     scroll->setWidget(scrollWidget);
@@ -164,28 +130,21 @@ ThemeEditor::ThemeEditor(int themeIndex, QWidget* parent)
 
     // ── Bottom bar ──
     auto* bottomRow = new QHBoxLayout;
-    m_previewBtn = new QPushButton(QStringLiteral("Live Preview"));
-    m_previewBtn->setCheckable(true);
-    connect(m_previewBtn, &QPushButton::toggled, this, [this](bool) { togglePreview(); });
-    bottomRow->addWidget(m_previewBtn);
-
     bottomRow->addStretch();
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, [this]() {
-        if (m_previewing) {
-            ThemeManager::instance().revertPreview();
-            m_previewing = false;
-        }
+        ThemeManager::instance().revertPreview();
         reject();
     });
     bottomRow->addWidget(buttons);
     mainLayout->addLayout(bottomRow);
 
-    // Initial update
+    // Initial swatch update + start live preview
     for (int i = 0; i < m_swatches.size(); i++)
         updateSwatch(i);
+    tm.previewTheme(m_theme);
 }
 
 // ── Load a different theme into the editor ──
@@ -207,8 +166,7 @@ void ThemeEditor::loadTheme(int index) {
     for (int i = 0; i < m_swatches.size(); i++)
         updateSwatch(i);
 
-    if (m_previewing)
-        tm.previewTheme(m_theme);
+    tm.previewTheme(m_theme);
 }
 
 // ── Swatch update ──
@@ -231,19 +189,8 @@ void ThemeEditor::pickColor(int idx) {
     if (c.isValid()) {
         m_theme.*s.field = c;
         updateSwatch(idx);
-            if (m_previewing)
-            ThemeManager::instance().previewTheme(m_theme);
-    }
-}
-
-// ── Live preview toggle ──
-
-void ThemeEditor::togglePreview() {
-    m_previewing = m_previewBtn->isChecked();
-    if (m_previewing)
         ThemeManager::instance().previewTheme(m_theme);
-    else
-        ThemeManager::instance().revertPreview();
+    }
 }
 
 } // namespace rcx

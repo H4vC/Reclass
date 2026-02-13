@@ -36,14 +36,10 @@ private:
     QComboBox*   m_themeCombo   = nullptr;
     QLineEdit*   m_nameEdit     = nullptr;
     QLabel*      m_fileInfoLabel = nullptr;
-    QPushButton* m_previewBtn   = nullptr;
-    bool         m_previewing   = false;
 
     void loadTheme(int index);
-    void rebuildSwatches(QVBoxLayout* swatchLayout);
     void updateSwatch(int idx);
     void pickColor(int idx);
-    void togglePreview();
 };
 
 } // namespace rcx
