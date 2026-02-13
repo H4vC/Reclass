@@ -6,79 +6,8 @@
 #include <QDialogButtonBox>
 #include <QColorDialog>
 #include <QComboBox>
-#include <cmath>
 
 namespace rcx {
-
-// ── Color utilities ──
-
-namespace {
-
-double srgbLinear(double c) {
-    return (c <= 0.03928) ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
-}
-
-double relativeLuminance(const QColor& c) {
-    return 0.2126 * srgbLinear(c.redF())
-         + 0.7152 * srgbLinear(c.greenF())
-         + 0.0722 * srgbLinear(c.blueF());
-}
-
-double contrastRatio(const QColor& fg, const QColor& bg) {
-    double l1 = relativeLuminance(fg);
-    double l2 = relativeLuminance(bg);
-    if (l1 < l2) std::swap(l1, l2);
-    return (l1 + 0.05) / (l2 + 0.05);
-}
-
-QString wcagLevel(double ratio) {
-    if (ratio >= 7.0) return QStringLiteral("AAA");
-    if (ratio >= 4.5) return QStringLiteral("AA");
-    return QStringLiteral("FAIL");
-}
-
-// Compute the minimum fg lightness (HSL L) to reach targetRatio against bg
-QColor autoFixFg(const QColor& fg, const QColor& bg, double targetRatio) {
-    double lBg = relativeLuminance(bg);
-
-    // Determine if fg should be lighter or darker than bg
-    bool fgLighter = relativeLuminance(fg) >= relativeLuminance(bg);
-
-    double targetLum;
-    if (fgLighter)
-        targetLum = targetRatio * (lBg + 0.05) - 0.05;
-    else
-        targetLum = (lBg + 0.05) / targetRatio - 0.05;
-
-    targetLum = qBound(0.0, targetLum, 1.0);
-
-    // Binary search for HSL lightness that yields the target luminance
-    int h, s, l, a;
-    fg.getHsl(&h, &s, &l, &a);
-
-    int lo = fgLighter ? l : 0;
-    int hi = fgLighter ? 255 : l;
-
-    for (int iter = 0; iter < 20; iter++) {
-        int mid = (lo + hi) / 2;
-        QColor test;
-        test.setHsl(h, s, mid, a);
-        double testLum = relativeLuminance(test);
-        if (fgLighter) {
-            if (testLum < targetLum) lo = mid + 1;
-            else hi = mid;
-        } else {
-            if (testLum > targetLum) hi = mid - 1;
-            else lo = mid;
-        }
-    }
-
-    QColor result;
-    result.setHsl(h, s, fgLighter ? hi : lo, a);
-    return result;
-}
-
-} // anon
 
 // ── Section header label ──
 
@@ -228,80 +157,6 @@ ThemeEditor::ThemeEditor(int themeIndex, QWidget* parent)
         {"Error",    &Theme::markerError},
     });
 
-    // ── Contrast pairs ──
-    scrollLayout->addWidget(makeSectionLabel(QStringLiteral("Contrast")));
-
-    struct PairDef {
-        const char* fgLabel; const char* bgLabel;
-        QColor Theme::*fg; QColor Theme::*bg;
-    };
-    const PairDef pairs[] = {
-        {"text",        "background",    &Theme::text,          &Theme::background},
-        {"textDim",     "background",    &Theme::textDim,       &Theme::background},
-        {"textMuted",   "background",    &Theme::textMuted,     &Theme::background},
-        {"textFaint",   "background",    &Theme::textFaint,     &Theme::background},
-        {"text",        "backgroundAlt", &Theme::text,          &Theme::backgroundAlt},
-        {"text",        "surface",       &Theme::text,          &Theme::surface},
-        {"keyword",     "background",    &Theme::syntaxKeyword, &Theme::background},
-        {"type",        "background",    &Theme::syntaxType,    &Theme::background},
-        {"number",      "background",    &Theme::syntaxNumber,  &Theme::background},
-        {"string",      "background",    &Theme::syntaxString,  &Theme::background},
-        {"comment",     "background",    &Theme::syntaxComment, &Theme::background},
-        {"preproc",     "background",    &Theme::syntaxPreproc, &Theme::background},
-        {"hoverSpan",   "background",    &Theme::indHoverSpan,  &Theme::background},
-        {"hintGreen",   "background",    &Theme::indHintGreen,  &Theme::background},
-    };
-
-    for (int pi = 0; pi < (int)(sizeof(pairs) / sizeof(pairs[0])); pi++) {
-        const auto& p = pairs[pi];
-        int idx = m_contrastPairs.size();
-
-        auto* row = new QHBoxLayout;
-        row->setSpacing(4);
-        row->setContentsMargins(8, 1, 0, 1);
-
-        auto* pairLabel = new QLabel(QStringLiteral("%1 / %2")
-            .arg(QString::fromLatin1(p.fgLabel), QString::fromLatin1(p.bgLabel)));
-        pairLabel->setFixedWidth(150);
-        pairLabel->setStyleSheet(QStringLiteral("font-size: 10px;"));
-        row->addWidget(pairLabel);
-
-        auto* ratioLbl = new QLabel;
-        ratioLbl->setFixedWidth(44);
-        ratioLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        ratioLbl->setStyleSheet(QStringLiteral("font-size: 10px;"));
-        row->addWidget(ratioLbl);
-
-        auto* levelLbl = new QLabel;
-        levelLbl->setFixedWidth(34);
-        levelLbl->setAlignment(Qt::AlignCenter);
-        row->addWidget(levelLbl);
-
-        auto* fixBtn = new QPushButton(QStringLiteral("Fix"));
-        fixBtn->setFixedSize(36, 18);
-        fixBtn->setCursor(Qt::PointingHandCursor);
-        fixBtn->setStyleSheet(QStringLiteral(
-            "QPushButton { font-size: 9px; padding: 0; border: 1px solid #555; border-radius: 2px; }"
-            "QPushButton:hover { background: #444; }"));
-        fixBtn->hide();
-        connect(fixBtn, &QPushButton::clicked, this, [this, idx]() { autoFixContrast(idx); });
-        row->addWidget(fixBtn);
-
-        row->addStretch();
-
-        ContrastEntry ce;
-        ce.fgLabel    = p.fgLabel;
-        ce.bgLabel    = p.bgLabel;
-        ce.fgField    = p.fg;
-        ce.bgField    = p.bg;
-        ce.ratioLabel = ratioLbl;
-        ce.levelLabel = levelLbl;
-        ce.fixBtn     = fixBtn;
-        m_contrastPairs.append(ce);
-
-        scrollLayout->addLayout(row);
-    }
-
     scrollLayout->addStretch();
     scroll->setWidget(scrollWidget);
     mainLayout->addWidget(scroll, 1);
@@ -330,7 +185,6 @@ ThemeEditor::ThemeEditor(int themeIndex, QWidget* parent)
     // Initial update
     for (int i = 0; i < m_swatches.size(); i++)
         updateSwatch(i);
-    updateAllContrast();
 }
 
 // ── Load a different theme into the editor ──
@@ -351,7 +205,6 @@ void ThemeEditor::loadTheme(int index) {
 
     for (int i = 0; i < m_swatches.size(); i++)
         updateSwatch(i);
-    updateAllContrast();
 
     if (m_previewing)
         tm.previewTheme(m_theme);
@@ -369,30 +222,6 @@ void ThemeEditor::updateSwatch(int idx) {
     s.hexLabel->setText(c.name());
 }
 
-// ── Contrast update ──
-
-void ThemeEditor::updateAllContrast() {
-    for (int i = 0; i < m_contrastPairs.size(); i++) {
-        auto& cp = m_contrastPairs[i];
-        QColor fg = m_theme.*cp.fgField;
-        QColor bg = m_theme.*cp.bgField;
-        double ratio = contrastRatio(fg, bg);
-        QString level = wcagLevel(ratio);
-
-        cp.ratioLabel->setText(QStringLiteral("%1:1").arg(ratio, 0, 'f', 1));
-        cp.levelLabel->setText(level);
-
-        if (level == "AAA")
-            cp.levelLabel->setStyleSheet(QStringLiteral("color: #4ec94e; font-weight: bold; font-size: 10px;"));
-        else if (level == "AA")
-            cp.levelLabel->setStyleSheet(QStringLiteral("color: #c9c94e; font-weight: bold; font-size: 10px;"));
-        else
-            cp.levelLabel->setStyleSheet(QStringLiteral("color: #c94e4e; font-weight: bold; font-size: 10px;"));
-
-        cp.fixBtn->setVisible(level == "FAIL");
-    }
-}
-
 // ── Color picker ──
 
 void ThemeEditor::pickColor(int idx) {
@@ -401,32 +230,9 @@ void ThemeEditor::pickColor(int idx) {
     if (c.isValid()) {
         m_theme.*s.field = c;
         updateSwatch(idx);
-        updateAllContrast();
-        if (m_previewing)
+            if (m_previewing)
             ThemeManager::instance().previewTheme(m_theme);
     }
-}
-
-// ── Auto-fix contrast ──
-
-void ThemeEditor::autoFixContrast(int idx) {
-    auto& cp = m_contrastPairs[idx];
-    QColor fg = m_theme.*cp.fgField;
-    QColor bg = m_theme.*cp.bgField;
-
-    QColor fixed = autoFixFg(fg, bg, 4.6);  // slightly above 4.5 for margin
-    m_theme.*cp.fgField = fixed;
-
-    // Update the swatch that owns this fg color
-    for (int i = 0; i < m_swatches.size(); i++) {
-        if (m_swatches[i].field == cp.fgField) {
-            updateSwatch(i);
-            break;
-        }
-    }
-    updateAllContrast();
-    if (m_previewing)
-        ThemeManager::instance().previewTheme(m_theme);
 }
 
 // ── Live preview toggle ──

@@ -32,18 +32,6 @@ private:
     };
     QVector<SwatchEntry> m_swatches;
 
-    // ── Contrast pair row ──
-    struct ContrastEntry {
-        const char* fgLabel;
-        const char* bgLabel;
-        QColor Theme::*fgField;
-        QColor Theme::*bgField;
-        QLabel* ratioLabel = nullptr;
-        QLabel* levelLabel = nullptr;
-        QPushButton* fixBtn = nullptr;
-    };
-    QVector<ContrastEntry> m_contrastPairs;
-
     // ── UI ──
     QComboBox*   m_themeCombo   = nullptr;
     QLineEdit*   m_nameEdit     = nullptr;
@@ -54,9 +42,7 @@ private:
     void loadTheme(int index);
     void rebuildSwatches(QVBoxLayout* swatchLayout);
     void updateSwatch(int idx);
-    void updateAllContrast();
     void pickColor(int idx);
-    void autoFixContrast(int idx);
     void togglePreview();
 };
 
