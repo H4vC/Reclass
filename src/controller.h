@@ -89,6 +89,7 @@ public:
     void insertNode(uint64_t parentId, int offset, NodeKind kind, const QString& name);
     void removeNode(int nodeIdx);
     void toggleCollapse(int nodeIdx);
+    void materializeRefChildren(int nodeIdx);
     void setNodeValue(int nodeIdx, int subLine, const QString& text, bool isAscii = false);
     void duplicateNode(int nodeIdx);
     void showContextMenu(RcxEditor* editor, int line, int nodeIdx, int subLine, const QPoint& globalPos);

@@ -792,6 +792,44 @@ void RcxController::toggleCollapse(int nodeIdx) {
         cmd::Collapse{node.id, node.collapsed, !node.collapsed}));
 }
 
+void RcxController::materializeRefChildren(int nodeIdx) {
+    if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
+    auto& tree = m_doc->tree;
+
+    // Snapshot values before addNode invalidates references
+    const uint64_t parentId  = tree.nodes[nodeIdx].id;
+    const uint64_t refId     = tree.nodes[nodeIdx].refId;
+    const NodeKind parentKind = tree.nodes[nodeIdx].kind;
+    const QString  parentName = tree.nodes[nodeIdx].name;
+
+    if (refId == 0) return;
+    if (!tree.childrenOf(parentId).isEmpty()) return;  // already materialized
+
+    // Clone all children of the referenced struct as real children of this struct
+    QVector<int> refChildren = tree.childrenOf(refId);
+    for (int ci : refChildren) {
+        Node copy = tree.nodes[ci];
+        copy.id = 0;               // auto-assign new ID
+        copy.parentId = parentId;
+        copy.collapsed = true;     // start collapsed
+        tree.addNode(copy);
+    }
+    tree.invalidateIdCache();
+
+    // Auto-expand the self-referential child (the one that was the cycle)
+    // so the user gets expand in a single click
+    QVector<int> newChildren = tree.childrenOf(parentId);
+    for (int ci : newChildren) {
+        auto& c = tree.nodes[ci];
+        if (c.kind == parentKind && c.name == parentName && c.refId == refId) {
+            c.collapsed = false;
+            break;
+        }
+    }
+
+    refresh();
+}
+
 void RcxController::applyCommand(const Command& command, bool isUndo) {
     auto& tree = m_doc->tree;
 
@@ -1965,7 +2003,10 @@ void RcxController::handleMarginClick(RcxEditor* editor, int margin,
     if (!lm) return;
 
     if (lm->foldHead && (margin == 0 || margin == 1)) {
-        toggleCollapse(lm->nodeIdx);
+        if (lm->markerMask & (1u << M_CYCLE))
+            materializeRefChildren(lm->nodeIdx);
+        else
+            toggleCollapse(lm->nodeIdx);
     } else if (margin == 0 || margin == 1) {
         emit nodeSelected(lm->nodeIdx);
     }

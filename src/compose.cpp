@@ -345,12 +345,36 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                 std::sort(refChildren.begin(), refChildren.end(), [&](int a, int b) {
                     return tree.nodes[a].offset < tree.nodes[b].offset;
                 });
+                // Use the referenced struct's scope widths (children come from there)
+                uint64_t refScopeId = node.refId;
                 for (int childIdx : refChildren) {
-                    // Skip self-referential children (e.g. struct Ball has a field of type Ball)
-                    if (state.visiting.contains(tree.nodes[childIdx].id))
+                    const Node& child = tree.nodes[childIdx];
+                    // Self-referential child → show as collapsed struct (non-expandable)
+                    if (state.visiting.contains(child.id)) {
+                        int typeW = state.effectiveTypeW(refScopeId);
+                        int nameW = state.effectiveNameW(refScopeId);
+                        LineMeta lm;
+                        lm.nodeIdx    = nodeIdx;  // parent struct — materialize target
+                        lm.nodeId     = child.id;
+                        lm.depth      = childDepth;
+                        lm.lineKind   = LineKind::Header;
+                        lm.offsetText = fmt::fmtOffsetMargin(
+                            tree.baseAddress + absAddr + child.offset, false,
+                            state.offsetHexDigits);
+                        lm.offsetAddr = tree.baseAddress + absAddr + child.offset;
+                        lm.nodeKind   = child.kind;
+                        lm.foldHead      = true;
+                        lm.foldCollapsed = true;
+                        lm.foldLevel  = computeFoldLevel(childDepth, true);
+                        lm.markerMask = (1u << M_STRUCT_BG) | (1u << M_CYCLE);
+                        lm.effectiveTypeW = typeW;
+                        lm.effectiveNameW = nameW;
+                        state.emitLine(fmt::fmtStructHeader(child, childDepth,
+                            /*collapsed=*/true, typeW, nameW), lm);
                         continue;
+                    }
                     composeNode(state, tree, prov, childIdx, childDepth,
-                                absAddr, node.refId, false, node.id);
+                                absAddr, node.refId, false, refScopeId);
                 }
             }
         }
