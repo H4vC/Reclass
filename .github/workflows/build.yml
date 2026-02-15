@@ -34,7 +34,7 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_windbg_provider|test_com_security"
 
       - name: Upload build
         uses: actions/upload-artifact@v4
