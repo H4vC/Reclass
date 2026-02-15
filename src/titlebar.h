@@ -16,6 +16,8 @@ public:
     QMenuBar* menuBar() const { return m_menuBar; }
     void applyTheme(const Theme& theme);
     void setShowIcon(bool show);
+    void setMenuBarTitleCase(bool titleCase);
+    bool menuBarTitleCase() const { return m_titleCase; }
 
     void updateMaximizeIcon();
 
@@ -32,6 +34,7 @@ private:
     QToolButton* m_btnClose   = nullptr;
 
     Theme m_theme;
+    bool  m_titleCase = true;
 
     QToolButton* makeChromeButton(const QString& iconPath);
     void toggleMaximize();

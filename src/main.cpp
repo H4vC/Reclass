@@ -43,6 +43,7 @@
 #include <QDesktopServices>
 #include "themes/thememanager.h"
 #include "themes/themeeditor.h"
+#include "optionsdialog.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -301,6 +302,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createMenus();
     createStatusBar();
 
+    // Restore menu bar title case setting (after menus are created)
+    {
+        bool titleCase = QSettings("Reclass", "Reclass").value("menuBarTitleCase", true).toBool();
+        m_titleBar->setMenuBarTitleCase(titleCase);
+    }
 
     // MenuBarStyle is set as app style in main() — covers both QMenuBar and QMenu
 
@@ -310,9 +316,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Load plugins
     m_pluginManager.LoadPlugins();
 
-    // MCP bridge (on by default)
+    // Start MCP bridge
     m_mcp = new McpBridge(this, this);
-    m_mcp->start();
+    if (QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool())
+        m_mcp->start();
 
     connect(m_mdiArea, &QMdiArea::subWindowActivated,
             this, [this](QMdiSubWindow*) {
@@ -350,7 +357,9 @@ void MainWindow::createMenus() {
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
-    m_mcpAction = file->addAction("Stop &MCP Server", this, &MainWindow::toggleMcp);
+    m_mcpAction = file->addAction(QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool() ? "Stop &MCP Server" : "Start &MCP Server", this, &MainWindow::toggleMcp);
+    file->addSeparator();
+    file->addAction(makeIcon(":/vsicons/settings-gear.svg"), "&Options...", this, &MainWindow::showOptionsDialog);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", this, &QMainWindow::close, QKeySequence(Qt::Key_Close));
 
@@ -1022,6 +1031,39 @@ void MainWindow::editTheme() {
     } else {
         tm.revertPreview();
     }
+}
+
+// TODO: when adding more and more options, this func becomes very clunky. Fix
+void MainWindow::showOptionsDialog() {
+    auto& tm = ThemeManager::instance();
+    OptionsResult current;
+    current.themeIndex = tm.currentIndex();
+    current.fontName = QSettings("Reclass", "Reclass").value("font", "JetBrains Mono").toString();
+    current.menuBarTitleCase = m_titleBar->menuBarTitleCase();
+    current.safeMode = QSettings("Reclass", "Reclass").value("safeMode", false).toBool();
+    current.autoStartMcp = QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool();
+
+    OptionsDialog dlg(current, this);
+    if (dlg.exec() != QDialog::Accepted) return; // OptionsDialog doesn't apply anything. Only apply on OK
+
+    auto r = dlg.result();
+
+    if (r.themeIndex != current.themeIndex)
+        tm.setCurrent(r.themeIndex);
+
+    if (r.fontName != current.fontName)
+        setEditorFont(r.fontName);
+
+    if (r.menuBarTitleCase != current.menuBarTitleCase) {
+        m_titleBar->setMenuBarTitleCase(r.menuBarTitleCase);
+        QSettings("Reclass", "Reclass").setValue("menuBarTitleCase", r.menuBarTitleCase);
+    }
+
+    if (r.safeMode != current.safeMode)
+        QSettings("Reclass", "Reclass").setValue("safeMode", r.safeMode);
+
+    if (r.autoStartMcp != current.autoStartMcp)
+        QSettings("Reclass", "Reclass").setValue("autoStartMcp", r.autoStartMcp);
 }
 
 void MainWindow::setEditorFont(const QString& fontName) {

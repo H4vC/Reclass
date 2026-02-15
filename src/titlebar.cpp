@@ -114,6 +114,33 @@ void TitleBarWidget::setShowIcon(bool show) {
     }
 }
 
+void TitleBarWidget::setMenuBarTitleCase(bool titleCase) {
+    m_titleCase = titleCase;
+    for (QAction* action : m_menuBar->actions()) {
+        QString text = action->text();
+        QString clean = text;
+        clean.remove('&');
+
+        if (titleCase) {
+            QString result;
+            bool capitalizeNext = true;
+            for (int i = 0; i < clean.length(); ++i) {
+                QChar ch = clean[i];
+                if (ch.isLetter()) {
+                    result += capitalizeNext ? ch.toUpper() : ch.toLower();
+                    capitalizeNext = false;
+                } else {
+                    result += ch;
+                    if (ch.isSpace()) capitalizeNext = true;
+                }
+            }
+            action->setText("&" + result);
+        } else {
+            action->setText("&" + clean.toUpper());
+        }
+    }
+}
+
 void TitleBarWidget::updateMaximizeIcon() {
     if (window()->isMaximized())
         m_btnMax->setIcon(QIcon(":/vsicons/chrome-restore.svg"));

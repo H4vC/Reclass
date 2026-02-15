@@ -47,5 +47,7 @@
         <file alias="selection.svg">vsicons/list-selection.svg</file>
         <file alias="symbol-numeric.svg">vsicons/symbol-numeric.svg</file>
         <file alias="symbol-ruler.svg">vsicons/symbol-ruler.svg</file>
+        <file alias="settings-gear.svg">vsicons/settings-gear.svg</file>
+        <file alias="chevron-down.svg">vsicons/chevron-down.svg</file>
     </qresource>
 </RCC>

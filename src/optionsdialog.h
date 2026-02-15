@@ -1,0 +1,53 @@
+#pragma once
+#include "themes/theme.h"
+#include <QDialog>
+#include <QLineEdit>
+#include <QTreeWidget>
+#include <QStackedWidget>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QHash>
+#include <QColor>
+
+namespace rcx {
+
+struct OptionsResult {
+    int     themeIndex = 0;
+    QString fontName;
+    bool    menuBarTitleCase = true;
+    bool    safeMode = false;
+    bool    autoStartMcp = false;
+};
+
+class OptionsDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit OptionsDialog(const OptionsResult& current, QWidget* parent = nullptr);
+
+    OptionsResult result() const;
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
+private:
+    void filterTree(const QString& text);
+    static QStringList collectPageKeywords(QWidget* page);
+
+    QLineEdit*      m_search         = nullptr;
+    QTreeWidget*    m_tree           = nullptr;
+    QStackedWidget* m_pages          = nullptr;
+    QComboBox*      m_themeCombo     = nullptr;
+    QComboBox*      m_fontCombo      = nullptr;
+    QCheckBox*      m_titleCaseCheck = nullptr;
+    QCheckBox*      m_safeModeCheck  = nullptr;
+    QCheckBox*      m_autoMcpCheck   = nullptr;
+
+    QColor m_shadowColor;
+
+    // searchable keywords per leaf tree item
+    QHash<QTreeWidgetItem*, QStringList> m_pageKeywords;
+    // tree item → stacked widget page index
+    QHash<QTreeWidgetItem*, int> m_itemPageIndex;
+};
+
+} // namespace rcx

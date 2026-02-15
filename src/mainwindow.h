@@ -49,6 +49,7 @@ private slots:
     void exportCpp();
     void showTypeAliasesDialog();
     void editTheme();
+    void showOptionsDialog();
 
 public:
     // Project Lifecycle API
