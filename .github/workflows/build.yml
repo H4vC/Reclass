@@ -36,7 +36,7 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_windbg_provider|test_com_security"
 
-      - name: Upload build
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -52,3 +52,35 @@ jobs:
             build/iconengines/
             build/themes/
             build/screenshot.png
+
+      - name: Package release zip
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          mkdir -p release
+          cp build/Reclass.exe release/
+          cp build/ReclassMcpBridge.exe release/
+          cp build/*.dll release/ 2>/dev/null || true
+          cp -r build/platforms release/ 2>/dev/null || true
+          cp -r build/styles release/ 2>/dev/null || true
+          cp -r build/imageformats release/ 2>/dev/null || true
+          cp -r build/iconengines release/ 2>/dev/null || true
+          cp -r build/Plugins release/ 2>/dev/null || true
+          cp -r build/themes release/ 2>/dev/null || true
+          cp build/screenshot.png release/ 2>/dev/null || true
+          cd release && 7z a ../win64-reclass-latest.zip *
+
+      - name: Update latest release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          body: |
+            Automated build from main branch.
+            Commit: ${{ github.sha }}
+          prerelease: true
+          files: win64-reclass-latest.zip
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
