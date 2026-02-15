@@ -89,6 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   linux:
+    needs: windows
     runs-on: ubuntu-22.04
 
     steps:
