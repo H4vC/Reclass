@@ -97,12 +97,14 @@ endforeach()
 
 include(deploy)
 
-add_custom_target(screenshot ALL
-    COMMAND Reclass --screenshot ${CMAKE_BINARY_DIR}/screenshot.png
-    DEPENDS Reclass deploy
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Capturing UI screenshot with class open..."
-)
+if(TARGET deploy)
+    add_custom_target(screenshot ALL
+        COMMAND Reclass --screenshot ${CMAKE_BINARY_DIR}/screenshot.png
+        DEPENDS Reclass deploy
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Capturing UI screenshot with class open..."
+    )
+endif()
 
 set(_combine_script "${CMAKE_BINARY_DIR}/combine_sources.cmake")
 file(WRITE ${_combine_script} "
@@ -259,15 +261,14 @@ if(BUILD_TESTING)
     target_link_libraries(test_theme PRIVATE ${QT}::Widgets ${QT}::Test)
     add_test(NAME test_theme COMMAND test_theme)
 
-    add_executable(test_windbg_provider tests/test_windbg_provider.cpp
-        plugins/WinDbgMemory/WinDbgMemoryPlugin.cpp)
-    target_include_directories(test_windbg_provider PRIVATE src plugins/WinDbgMemory)
-    target_link_libraries(test_windbg_provider PRIVATE
-        ${QT}::Widgets ${QT}::Concurrent ${QT}::Test)
     if(WIN32)
-        target_link_libraries(test_windbg_provider PRIVATE dbgeng ole32)
+        add_executable(test_windbg_provider tests/test_windbg_provider.cpp
+            plugins/WinDbgMemory/WinDbgMemoryPlugin.cpp)
+        target_include_directories(test_windbg_provider PRIVATE src plugins/WinDbgMemory)
+        target_link_libraries(test_windbg_provider PRIVATE
+            ${QT}::Widgets ${QT}::Concurrent ${QT}::Test dbgeng ole32)
+        add_test(NAME test_windbg_provider COMMAND test_windbg_provider)
     endif()
-    add_test(NAME test_windbg_provider COMMAND test_windbg_provider)
 
     # Standalone test: proves whether CoInitializeSecurity is needed for DebugConnect
     # Requires a running WinDbg debug server on port 5055
@@ -290,5 +291,7 @@ if(BUILD_TESTING)
         )
     endif()
 endif()
-add_subdirectory(plugins/ProcessMemory)
-add_subdirectory(plugins/WinDbgMemory)
+if(WIN32)
+    add_subdirectory(plugins/ProcessMemory)
+    add_subdirectory(plugins/WinDbgMemory)
+endif()

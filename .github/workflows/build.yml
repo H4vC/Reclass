@@ -73,17 +73,81 @@ jobs:
           cp build/screenshot.png release/ 2>/dev/null || true
           cd release && 7z a ../win64-reclass-latest.zip *
 
-      - name: Update latest release
+      - name: Update win64 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest Build
+          tag_name: latest-win64
+          name: win64
           body: |
-            Automated build from main branch.
+            Windows x64 build from main branch.
             Commit: ${{ github.sha }}
           prerelease: true
           files: win64-reclass-latest.zip
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+          cache: true
+          aqtversion: '==3.1.21'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: xvfb-run ctest --test-dir build --output-on-failure --exclude-regex "test_editor"
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Reclass-Linux-x64
+          path: |
+            build/Reclass
+            build/ReclassMcpBridge
+
+      - name: Package release tarball
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p release
+          cp build/Reclass release/
+          cp build/ReclassMcpBridge release/
+          cp -r build/themes release/ 2>/dev/null || true
+          tar czf linux64-reclass-latest.tar.gz -C release .
+
+      - name: Update linux64 release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-linux64
+          name: linux64
+          body: |
+            Linux x64 build from main branch.
+            Commit: ${{ github.sha }}
+          prerelease: true
+          files: linux64-reclass-latest.tar.gz
           make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
