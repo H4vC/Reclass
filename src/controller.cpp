@@ -234,8 +234,9 @@ void RcxController::connectEditor(RcxEditor* editor) {
         switch (target) {
         case EditTarget::Name: {
             if (text.isEmpty()) break;
+            if (nodeIdx >= m_doc->tree.nodes.size()) break;
             const Node& node = m_doc->tree.nodes[nodeIdx];
-            // ASCII edit on Hex/Padding nodes
+            // ASCII edit on Hex nodes
             if (isHexPreview(node.kind)) {
                 setNodeValue(nodeIdx, subLine, text, /*isAscii=*/true);
             } else {
@@ -610,7 +611,7 @@ void RcxController::refresh() {
 
             if (isHexPreview(node.kind)) {
                 // Per-byte tracking for hex preview nodes
-                int lineOff = (node.kind == NodeKind::Padding) ? lm.subLine * 8 : 0;
+                int lineOff = 0;
                 int byteCount = lm.lineByteCount;
                 for (int b = 0; b < byteCount; b++) {
                     if (m_changedOffsets.contains(offset + lineOff + b)) {
@@ -807,38 +808,52 @@ void RcxController::materializeRefChildren(int nodeIdx) {
     if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
     auto& tree = m_doc->tree;
 
-    // Snapshot values before addNode invalidates references
-    const uint64_t parentId  = tree.nodes[nodeIdx].id;
-    const uint64_t refId     = tree.nodes[nodeIdx].refId;
+    // Snapshot values before any mutation invalidates references
+    const uint64_t parentId   = tree.nodes[nodeIdx].id;
+    const uint64_t refId      = tree.nodes[nodeIdx].refId;
     const NodeKind parentKind = tree.nodes[nodeIdx].kind;
     const QString  parentName = tree.nodes[nodeIdx].name;
 
     if (refId == 0) return;
     if (!tree.childrenOf(parentId).isEmpty()) return;  // already materialized
 
-    // Clone all children of the referenced struct as real children of this struct
+    // Collect children to clone (copy by value to avoid reference invalidation)
     QVector<int> refChildren = tree.childrenOf(refId);
+    if (refChildren.isEmpty()) return;
+
+    QVector<Node> clones;
+    clones.reserve(refChildren.size());
     for (int ci : refChildren) {
-        Node copy = tree.nodes[ci];
-        copy.id = 0;               // auto-assign new ID
+        Node copy = tree.nodes[ci];  // copy by value before any mutation
+        copy.id = tree.reserveId();
         copy.parentId = parentId;
-        copy.collapsed = true;     // start collapsed
-        tree.addNode(copy);
+        copy.collapsed = true;
+        clones.append(copy);
     }
-    tree.invalidateIdCache();
+
+    // Wrap all mutations in an undo macro
+    bool wasSuppressed = m_suppressRefresh;
+    m_suppressRefresh = true;
+    m_doc->undoStack.beginMacro(QStringLiteral("Materialize ref children"));
+
+    for (const Node& clone : clones) {
+        m_doc->undoStack.push(new RcxCommand(this,
+            cmd::Insert{clone, {}}));
+    }
 
     // Auto-expand the self-referential child (the one that was the cycle)
     // so the user gets expand in a single click
-    QVector<int> newChildren = tree.childrenOf(parentId);
-    for (int ci : newChildren) {
-        auto& c = tree.nodes[ci];
-        if (c.kind == parentKind && c.name == parentName && c.refId == refId) {
-            c.collapsed = false;
+    for (const Node& clone : clones) {
+        if (clone.kind == parentKind && clone.name == parentName && clone.refId == refId) {
+            m_doc->undoStack.push(new RcxCommand(this,
+                cmd::Collapse{clone.id, true, false}));
             break;
         }
     }
 
-    refresh();
+    m_doc->undoStack.endMacro();
+    m_suppressRefresh = wasSuppressed;
+    if (!m_suppressRefresh) refresh();
 }
 
 void RcxController::applyCommand(const Command& command, bool isUndo) {
@@ -1101,23 +1116,23 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         // Quick-convert suggestions for Hex nodes
         bool addedQuickConvert = false;
         if (node.kind == NodeKind::Hex64) {
-            menu.addAction(icon("symbol-numeric.svg"), "Change to uint64_t", [this, nodeId]() {
+            menu.addAction("Change to uint64_t", [this, nodeId]() {
                 int ni = m_doc->tree.indexOfId(nodeId);
                 if (ni >= 0) changeNodeKind(ni, NodeKind::UInt64);
             });
-            menu.addAction(icon("symbol-numeric.svg"), "Change to uint32_t", [this, nodeId]() {
+            menu.addAction("Change to uint32_t", [this, nodeId]() {
                 int ni = m_doc->tree.indexOfId(nodeId);
                 if (ni >= 0) changeNodeKind(ni, NodeKind::UInt32);
             });
             addedQuickConvert = true;
         } else if (node.kind == NodeKind::Hex32) {
-            menu.addAction(icon("symbol-numeric.svg"), "Change to uint32_t", [this, nodeId]() {
+            menu.addAction("Change to uint32_t", [this, nodeId]() {
                 int ni = m_doc->tree.indexOfId(nodeId);
                 if (ni >= 0) changeNodeKind(ni, NodeKind::UInt32);
             });
             addedQuickConvert = true;
         } else if (node.kind == NodeKind::Hex16) {
-            menu.addAction(icon("symbol-numeric.svg"), "Change to int16_t", [this, nodeId]() {
+            menu.addAction("Change to int16_t", [this, nodeId]() {
                 int ni = m_doc->tree.indexOfId(nodeId);
                 if (ni >= 0) changeNodeKind(ni, NodeKind::Int16);
             });
@@ -1127,7 +1142,6 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
             menu.addSeparator();
 
         bool isEditable = node.kind != NodeKind::Struct && node.kind != NodeKind::Array
-                          && node.kind != NodeKind::Padding
                           && m_doc->provider->isWritable();
         if (isEditable) {
             menu.addAction(icon("edit.svg"), "Edit &Value\tEnter", [editor, line]() {
@@ -1142,6 +1156,51 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         menu.addAction("Change &Type\tT", [editor, line]() {
             editor->beginInlineEdit(EditTarget::Type, line);
         });
+
+        // Convert to Hex nodes (decompose non-hex types into Hex64/32/16/8)
+        if (!isHexNode(node.kind) && node.kind != NodeKind::Struct && node.kind != NodeKind::Array) {
+            menu.addAction("Convert to &Hex", [this, nodeId]() {
+                int ni = m_doc->tree.indexOfId(nodeId);
+                if (ni < 0) return;
+                const Node& n = m_doc->tree.nodes[ni];
+                int totalSize = n.byteSize();
+                if (totalSize <= 0) return;
+
+                uint64_t parentId = n.parentId;
+                int baseOffset = n.offset;
+
+                bool wasSuppressed = m_suppressRefresh;
+                m_suppressRefresh = true;
+                m_doc->undoStack.beginMacro(QStringLiteral("Convert to Hex"));
+
+                // Remove the original node
+                QVector<Node> subtree;
+                subtree.append(n);
+                m_doc->undoStack.push(new RcxCommand(this,
+                    cmd::Remove{nodeId, subtree, {}}));
+
+                // Insert hex nodes to fill the space (largest first)
+                int padOffset = baseOffset;
+                int gap = totalSize;
+                while (gap > 0) {
+                    NodeKind padKind;
+                    int padSize;
+                    if (gap >= 8)      { padKind = NodeKind::Hex64; padSize = 8; }
+                    else if (gap >= 4) { padKind = NodeKind::Hex32; padSize = 4; }
+                    else if (gap >= 2) { padKind = NodeKind::Hex16; padSize = 2; }
+                    else               { padKind = NodeKind::Hex8;  padSize = 1; }
+
+                    insertNode(parentId, padOffset, padKind,
+                               QString("pad_%1").arg(padOffset, 2, 16, QChar('0')));
+                    padOffset += padSize;
+                    gap -= padSize;
+                }
+
+                m_doc->undoStack.endMacro();
+                m_suppressRefresh = wasSuppressed;
+                if (!m_suppressRefresh) refresh();
+            });
+        }
 
         menu.addSeparator();
 
@@ -1404,17 +1463,17 @@ void RcxController::performRealignment(uint64_t structId, int targetAlign) {
         return tree.nodes[a].offset < tree.nodes[b].offset;
     });
 
-    // Separate into real nodes (non-Padding) and padding nodes
+    // Separate into real nodes (non-hex) and hex filler nodes
     struct NodeInfo { uint64_t id; int offset; int size; };
     QVector<NodeInfo> realNodes;
-    QVector<uint64_t> padIds;
+    QVector<uint64_t> hexIds;
 
     for (int ci : kids) {
         const Node& child = tree.nodes[ci];
         int sz = (child.kind == NodeKind::Struct || child.kind == NodeKind::Array)
             ? tree.structSpan(child.id) : child.byteSize();
-        if (child.kind == NodeKind::Padding)
-            padIds.append(child.id);
+        if (isHexNode(child.kind))
+            hexIds.append(child.id);
         else
             realNodes.append({child.id, child.offset, sz});
     }
@@ -1447,7 +1506,7 @@ void RcxController::performRealignment(uint64_t structId, int targetAlign) {
     }
 
     // Check if anything actually changes
-    if (offChanges.isEmpty() && padIds.isEmpty() && padsNeeded.isEmpty())
+    if (offChanges.isEmpty() && hexIds.isEmpty() && padsNeeded.isEmpty())
         return;
 
     // Apply as undoable macro
@@ -1455,14 +1514,14 @@ void RcxController::performRealignment(uint64_t structId, int targetAlign) {
     m_suppressRefresh = true;
     m_doc->undoStack.beginMacro(QStringLiteral("Realign to %1").arg(targetAlign));
 
-    // 1. Remove all existing Padding nodes (no offset adjustments — we recompute)
-    for (uint64_t pid : padIds) {
-        int idx = tree.indexOfId(pid);
+    // 1. Remove all existing hex filler nodes (no offset adjustments — we recompute)
+    for (uint64_t hid : hexIds) {
+        int idx = tree.indexOfId(hid);
         if (idx < 0) continue;
         QVector<Node> subtree;
         subtree.append(tree.nodes[idx]);
         m_doc->undoStack.push(new RcxCommand(this,
-            cmd::Remove{pid, subtree, {}}));
+            cmd::Remove{hid, subtree, {}}));
     }
 
     // 2. Reposition real nodes
@@ -1471,15 +1530,28 @@ void RcxController::performRealignment(uint64_t structId, int targetAlign) {
             cmd::ChangeOffset{oc.id, oc.oldOff, oc.newOff}));
     }
 
-    // 3. Insert new padding in gaps
+    // 3. Insert hex nodes to fill gaps (largest first for alignment)
     for (const auto& pi : padsNeeded) {
-        Node pad;
-        pad.kind = NodeKind::Padding;
-        pad.parentId = structId;
-        pad.offset = pi.offset;
-        pad.arrayLen = pi.size;
-        pad.id = tree.reserveId();
-        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{pad}));
+        int padOffset = pi.offset;
+        int gap = pi.size;
+        while (gap > 0) {
+            NodeKind padKind;
+            int padSize;
+            if (gap >= 8)      { padKind = NodeKind::Hex64; padSize = 8; }
+            else if (gap >= 4) { padKind = NodeKind::Hex32; padSize = 4; }
+            else if (gap >= 2) { padKind = NodeKind::Hex16; padSize = 2; }
+            else               { padKind = NodeKind::Hex8;  padSize = 1; }
+
+            Node pad;
+            pad.kind = padKind;
+            pad.parentId = structId;
+            pad.offset = padOffset;
+            pad.name = QString("pad_%1").arg(padOffset, 2, 16, QChar('0'));
+            pad.id = tree.reserveId();
+            m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{pad}));
+            padOffset += padSize;
+            gap -= padSize;
+        }
     }
 
     m_doc->undoStack.endMacro();
@@ -1583,7 +1655,6 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
 
     auto addPrimitives = [&](bool enabled, bool excludeStructArrayPad) {
         for (const auto& m : kKindMeta) {
-            if (m.kind == NodeKind::Padding) continue;
             if (excludeStructArrayPad &&
                 (m.kind == NodeKind::Struct || m.kind == NodeKind::Array))
                 continue;
@@ -1718,6 +1789,10 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
     });
     connect(popup, &TypeSelectorPopup::createNewTypeRequested,
             this, [this, mode, nodeIdx]() {
+        bool wasSuppressed = m_suppressRefresh;
+        m_suppressRefresh = true;
+        m_doc->undoStack.beginMacro(QStringLiteral("Create new type"));
+
         Node n;
         n.kind = NodeKind::Struct;
         n.name = QString();
@@ -1725,6 +1800,16 @@ void RcxController::showTypePopup(RcxEditor* editor, TypePopupMode mode,
         n.offset = 0;
         n.id = m_doc->tree.reserveId();
         m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{n}));
+
+        // Populate with default hex nodes (8 x Hex64 = 64 bytes)
+        for (int i = 0; i < 8; i++) {
+            insertNode(n.id, i * 8, NodeKind::Hex64,
+                       QString("field_%1").arg(i * 8, 2, 16, QChar('0')));
+        }
+
+        m_doc->undoStack.endMacro();
+        m_suppressRefresh = wasSuppressed;
+
         TypeEntry newEntry;
         newEntry.entryKind = TypeEntry::Composite;
         newEntry.structId  = n.id;
@@ -1743,14 +1828,22 @@ void RcxController::applyTypePopupResult(TypePopupMode mode, int nodeIdx,
     }
 
     if (nodeIdx < 0 || nodeIdx >= m_doc->tree.nodes.size()) return;
-    const Node& node = m_doc->tree.nodes[nodeIdx];
+
+    // BUG-1 fix: Copy needed fields to locals before any mutation.
+    // changeNodeKind() can trigger insertNode() → addNode() → nodes.append(),
+    // which may reallocate the QVector, invalidating any reference into it.
+    const uint64_t nodeId   = m_doc->tree.nodes[nodeIdx].id;
+    const NodeKind nodeKind = m_doc->tree.nodes[nodeIdx].kind;
+    const NodeKind elemKind = m_doc->tree.nodes[nodeIdx].elementKind;
+    const uint64_t nodeRefId = m_doc->tree.nodes[nodeIdx].refId;
+    const int      arrLen   = m_doc->tree.nodes[nodeIdx].arrayLen;
 
     // Parse the full text for modifiers (e.g. "int32_t[10]", "Ball*")
     TypeSpec spec = parseTypeSpec(fullText);
 
     if (mode == TypePopupMode::FieldType) {
         if (entry.entryKind == TypeEntry::Primitive) {
-            if (entry.primitiveKind != node.kind)
+            if (entry.primitiveKind != nodeKind)
                 changeNodeKind(nodeIdx, entry.primitiveKind);
         } else if (entry.entryKind == TypeEntry::Composite) {
             bool wasSuppressed = m_suppressRefresh;
@@ -1759,34 +1852,34 @@ void RcxController::applyTypePopupResult(TypePopupMode mode, int nodeIdx,
 
             if (spec.isPointer) {
                 // Pointer modifier: e.g. "Material*" → Pointer64 + refId
-                if (node.kind != NodeKind::Pointer64)
+                if (nodeKind != NodeKind::Pointer64)
                     changeNodeKind(nodeIdx, NodeKind::Pointer64);
-                int idx = m_doc->tree.indexOfId(node.id);
+                int idx = m_doc->tree.indexOfId(nodeId);
                 if (idx >= 0 && m_doc->tree.nodes[idx].refId != entry.structId)
                     m_doc->undoStack.push(new RcxCommand(this,
-                        cmd::ChangePointerRef{node.id, m_doc->tree.nodes[idx].refId, entry.structId}));
+                        cmd::ChangePointerRef{nodeId, m_doc->tree.nodes[idx].refId, entry.structId}));
 
             } else if (spec.arrayCount > 0) {
                 // Array modifier: e.g. "Material[10]" → Array + Struct element
-                if (node.kind != NodeKind::Array)
+                if (nodeKind != NodeKind::Array)
                     changeNodeKind(nodeIdx, NodeKind::Array);
-                int idx = m_doc->tree.indexOfId(node.id);
+                int idx = m_doc->tree.indexOfId(nodeId);
                 if (idx >= 0) {
                     auto& n = m_doc->tree.nodes[idx];
                     if (n.elementKind != NodeKind::Struct || n.arrayLen != spec.arrayCount)
                         m_doc->undoStack.push(new RcxCommand(this,
-                            cmd::ChangeArrayMeta{node.id, n.elementKind, NodeKind::Struct,
+                            cmd::ChangeArrayMeta{nodeId, n.elementKind, NodeKind::Struct,
                                                  n.arrayLen, spec.arrayCount}));
                     if (n.refId != entry.structId)
                         m_doc->undoStack.push(new RcxCommand(this,
-                            cmd::ChangePointerRef{node.id, n.refId, entry.structId}));
+                            cmd::ChangePointerRef{nodeId, n.refId, entry.structId}));
                 }
 
             } else {
                 // Plain struct: e.g. "Material" → Struct + structTypeName + refId + collapsed
-                if (node.kind != NodeKind::Struct)
+                if (nodeKind != NodeKind::Struct)
                     changeNodeKind(nodeIdx, NodeKind::Struct);
-                int idx = m_doc->tree.indexOfId(node.id);
+                int idx = m_doc->tree.indexOfId(nodeId);
                 if (idx >= 0) {
                     int refIdx = m_doc->tree.indexOfId(entry.structId);
                     QString targetName;
@@ -1797,11 +1890,11 @@ void RcxController::applyTypePopupResult(TypePopupMode mode, int nodeIdx,
                     QString oldTypeName = m_doc->tree.nodes[idx].structTypeName;
                     if (oldTypeName != targetName)
                         m_doc->undoStack.push(new RcxCommand(this,
-                            cmd::ChangeStructTypeName{node.id, oldTypeName, targetName}));
+                            cmd::ChangeStructTypeName{nodeId, oldTypeName, targetName}));
                     // Set refId so compose can expand the referenced struct's children
                     if (m_doc->tree.nodes[idx].refId != entry.structId)
                         m_doc->undoStack.push(new RcxCommand(this,
-                            cmd::ChangePointerRef{node.id, m_doc->tree.nodes[idx].refId, entry.structId}));
+                            cmd::ChangePointerRef{nodeId, m_doc->tree.nodes[idx].refId, entry.structId}));
                     // ChangePointerRef auto-sets collapsed=true when refId != 0
                 }
             }
@@ -1812,33 +1905,32 @@ void RcxController::applyTypePopupResult(TypePopupMode mode, int nodeIdx,
         }
     } else if (mode == TypePopupMode::ArrayElement) {
         if (entry.entryKind == TypeEntry::Primitive) {
-            if (entry.primitiveKind != node.elementKind) {
+            if (entry.primitiveKind != elemKind) {
                 m_doc->undoStack.push(new RcxCommand(this,
-                    cmd::ChangeArrayMeta{node.id,
-                        node.elementKind, entry.primitiveKind,
-                        node.arrayLen, node.arrayLen}));
+                    cmd::ChangeArrayMeta{nodeId,
+                        elemKind, entry.primitiveKind,
+                        arrLen, arrLen}));
             }
         } else if (entry.entryKind == TypeEntry::Composite) {
-            if (node.elementKind != NodeKind::Struct || node.refId != entry.structId) {
+            if (elemKind != NodeKind::Struct || nodeRefId != entry.structId) {
                 m_doc->undoStack.push(new RcxCommand(this,
-                    cmd::ChangeArrayMeta{node.id,
-                        node.elementKind, NodeKind::Struct,
-                        node.arrayLen, node.arrayLen}));
-                if (node.refId != entry.structId) {
+                    cmd::ChangeArrayMeta{nodeId,
+                        elemKind, NodeKind::Struct,
+                        arrLen, arrLen}));
+                if (nodeRefId != entry.structId) {
                     m_doc->undoStack.push(new RcxCommand(this,
-                        cmd::ChangePointerRef{node.id, node.refId, entry.structId}));
+                        cmd::ChangePointerRef{nodeId, nodeRefId, entry.structId}));
                 }
             }
         }
     } else if (mode == TypePopupMode::PointerTarget) {
         // "void" entry → refId 0; composite entry → real structId
         uint64_t realRefId = (entry.entryKind == TypeEntry::Composite) ? entry.structId : 0;
-        if (realRefId != node.refId) {
+        if (realRefId != nodeRefId) {
             m_doc->undoStack.push(new RcxCommand(this,
-                cmd::ChangePointerRef{node.id, node.refId, realRefId}));
+                cmd::ChangePointerRef{nodeId, nodeRefId, realRefId}));
         }
     }
-    refresh();
 }
 
 void RcxController::attachViaPlugin(const QString& providerIdentifier, const QString& target) {
@@ -1921,11 +2013,11 @@ void RcxController::setupAutoRefresh() {
 void RcxController::collectPointerRanges(
         uint64_t structId, uint64_t memBase,
         int depth, int maxDepth,
-        QSet<uint64_t>& visited,
+        QSet<QPair<uint64_t,uint64_t>>& visited,
         QVector<QPair<uint64_t,int>>& ranges) const
 {
     if (depth >= maxDepth) return;
-    uint64_t key = memBase ^ (structId * 0x9E3779B97F4A7C15ULL);
+    QPair<uint64_t,uint64_t> key{structId, memBase};
     if (visited.contains(key)) return;
     visited.insert(key);
 
@@ -1982,7 +2074,7 @@ void RcxController::onRefreshTick() {
     ranges.append({0, extent});
 
     if (m_snapshotProv) {
-        QSet<uint64_t> visited;
+        QSet<QPair<uint64_t,uint64_t>> visited;
         uint64_t rootId = m_viewRootId;
         if (rootId == 0 && !m_doc->tree.nodes.isEmpty())
             rootId = m_doc->tree.nodes[0].id;

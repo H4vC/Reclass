@@ -7,6 +7,7 @@
 #include <QUndoCommand>
 #include <QTimer>
 #include <QFutureWatcher>
+#include <QPointer>
 #include <memory>
 
 namespace rcx {
@@ -138,7 +139,7 @@ private:
     int m_activeSourceIdx = -1;
 
     // ── Cached type selector popup (avoids ~350ms cold-start on first show) ──
-    TypeSelectorPopup* m_cachedPopup = nullptr;
+    QPointer<TypeSelectorPopup> m_cachedPopup;
 
     // ── Auto-refresh state ──
     using PageMap = QHash<uint64_t, QByteArray>;
@@ -169,7 +170,7 @@ private:
     void resetSnapshot();
     void collectPointerRanges(uint64_t structId, uint64_t memBase,
                               int depth, int maxDepth,
-                              QSet<uint64_t>& visited,
+                              QSet<QPair<uint64_t,uint64_t>>& visited,
                               QVector<QPair<uint64_t,int>>& ranges) const;
 };
 

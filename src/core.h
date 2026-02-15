@@ -27,7 +27,6 @@ enum class NodeKind : uint8_t {
     Pointer32, Pointer64,
     Vec2, Vec3, Vec4, Mat4x4,
     UTF8, UTF16,
-    Padding,
     Struct, Array
 };
 
@@ -37,11 +36,11 @@ inline uint qHash(rcx::NodeKind key, uint seed = 0) { return ::qHash(static_cast
 #endif
 namespace rcx { // reopen
 
-// ── Kind flags (replaces repeated Hex/Padding switches) ──
+// ── Kind flags (replaces repeated Hex switches) ──
 
 enum KindFlags : uint32_t {
     KF_None       = 0,
-    KF_HexPreview = 1 << 0,  // Hex8..Hex64 + Padding (ASCII+hex layout)
+    KF_HexPreview = 1 << 0,  // Hex8..Hex64 (ASCII+hex layout)
     KF_Container  = 1 << 1,  // Struct/Array
     KF_String     = 1 << 2,  // UTF8/UTF16
     KF_Vector     = 1 << 3,  // Vec2/3/4
@@ -84,7 +83,6 @@ inline constexpr KindMeta kKindMeta[] = {
     {NodeKind::Mat4x4,    "Mat4x4",    "mat4x4",     64,  4,  4, KF_None},
     {NodeKind::UTF8,      "UTF8",      "char[]",      1,  1,  1, KF_String},
     {NodeKind::UTF16,     "UTF16",     "wchar_t[]",   2,  1,  2, KF_String},
-    {NodeKind::Padding,   "Padding",   "pad",         1,  1,  1, KF_HexPreview},
     {NodeKind::Struct,    "Struct",    "struct",      0,  1,  1, KF_Container},
     {NodeKind::Array,     "Array",     "array",       0,  1,  1, KF_Container},
 };
@@ -155,7 +153,6 @@ inline QStringList allTypeNamesForUI(bool stripBrackets = false) {
 
 enum Marker : int {
     M_CONT      = 0,
-    M_PAD       = 1,
     M_PTR0      = 2,
     M_CYCLE     = 3,
     M_ERR       = 4,
@@ -187,9 +184,12 @@ struct Node {
     int byteSize() const {
         switch (kind) {
         case NodeKind::UTF8:    return strLen;
-        case NodeKind::UTF16:   return strLen * 2;
-        case NodeKind::Padding: return qMax(1, arrayLen);
-        case NodeKind::Array:   return arrayLen * sizeForKind(elementKind);
+        case NodeKind::UTF16:   return qMin(strLen, INT_MAX / 2) * 2;
+        case NodeKind::Array: {
+            int elemSz = sizeForKind(elementKind);
+            if (elemSz <= 0) return 0;
+            return qMin(arrayLen, INT_MAX / elemSz) * elemSz;
+        }
         default: return sizeForKind(kind);
         }
     }
@@ -221,8 +221,8 @@ struct Node {
         n.classKeyword = o["classKeyword"].toString();
         n.parentId  = o["parentId"].toString("0").toULongLong();
         n.offset    = o["offset"].toInt(0);
-        n.arrayLen  = o["arrayLen"].toInt(1);
-        n.strLen    = o["strLen"].toInt(64);
+        n.arrayLen  = qBound(1, o["arrayLen"].toInt(1), 1000000);
+        n.strLen    = qBound(1, o["strLen"].toInt(64), 1000000);
         n.collapsed = o["collapsed"].toBool(false);
         n.refId     = o["refId"].toString("0").toULongLong();
         n.elementKind = kindFromString(o["elementKind"].toString("UInt8"));
@@ -535,7 +535,7 @@ inline ColumnSpan nameSpanFor(const LineMeta& lm, int typeW = kColType, int name
     int ind = kFoldCol + lm.depth * 3;
     int start = ind + typeW + kSepWidth;
 
-    // Hex/Padding: ASCII preview occupies the name column (padded to nameW)
+    // Hex: ASCII preview occupies the name column (padded to nameW)
     if (isHexPreview(lm.nodeKind))
         return {start, start + nameW, true};
 
@@ -547,9 +547,9 @@ inline ColumnSpan valueSpanFor(const LineMeta& lm, int /*lineLength*/, int typeW
         lm.lineKind == LineKind::ArrayElementSeparator) return {};
     int ind = kFoldCol + lm.depth * 3;
 
-    // Hex/Padding uses nameW for ASCII column (same as regular name column)
-    bool isHexPad = isHexPreview(lm.nodeKind);
-    int valWidth = isHexPad ? 23 : kColValue;
+    // Hex uses nameW for ASCII column (same as regular name column)
+    bool isHex = isHexPreview(lm.nodeKind);
+    int valWidth = isHex ? 23 : kColValue;
 
     int prefixW = typeW + nameW + 2 * kSepWidth;
 
@@ -567,8 +567,8 @@ inline ColumnSpan commentSpanFor(const LineMeta& lm, int lineLength, int typeW =
     if (lm.lineKind == LineKind::Header || lm.lineKind == LineKind::Footer) return {};
     int ind = kFoldCol + lm.depth * 3;
 
-    bool isHexPad = isHexPreview(lm.nodeKind);
-    int valWidth = isHexPad ? 23 : kColValue;
+    bool isHex = isHexPreview(lm.nodeKind);
+    int valWidth = isHex ? 23 : kColValue;
 
     int prefixW = typeW + nameW + 2 * kSepWidth;
     int start;
