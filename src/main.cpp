@@ -426,14 +426,6 @@ void MainWindow::createMenus() {
     view->addSeparator();
     view->addAction(m_workspaceDock->toggleViewAction());
 
-    // Node
-    auto* node = m_titleBar->menuBar()->addMenu("&Node");
-    node->addAction(makeIcon(":/vsicons/add.svg"), "&Add Field", QKeySequence(Qt::Key_Insert), this, &MainWindow::addNode);
-    node->addAction(makeIcon(":/vsicons/remove.svg"), "&Remove Field", QKeySequence::Delete, this, &MainWindow::removeNode);
-    node->addAction(makeIcon(":/vsicons/symbol-structure.svg"), "Change &Type", QKeySequence(Qt::Key_T), this, &MainWindow::changeNodeType);
-    node->addAction(makeIcon(":/vsicons/edit.svg"), "Re&name", QKeySequence(Qt::Key_F2), this, &MainWindow::renameNodeAction);
-    node->addAction(makeIcon(":/vsicons/files.svg"), "D&uplicate", this, &MainWindow::duplicateNodeAction)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
-
     // Plugins
     auto* plugins = m_titleBar->menuBar()->addMenu("&Plugins");
     plugins->addAction("&Manage Plugins...", this, &MainWindow::showPluginsDialog);
