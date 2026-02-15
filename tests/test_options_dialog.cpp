@@ -132,9 +132,8 @@ private slots:
         // Verify the palette Highlight is distinguishable from Window background
         // This is the root cause of broken hover: if they're the same, hover is invisible
         auto& tm = ThemeManager::instance();
-        for (int i = 0; i < tm.themes().size(); ++i) {
-            const auto& theme = tm.themes()[i];
-            // selection must differ from background
+        const auto themes = tm.themes();
+        for (const auto& theme : themes) {
             QVERIFY2(theme.selection != theme.background,
                       qPrintable(QString("Theme '%1': selection == background (%2)")
                           .arg(theme.name, theme.background.name())));
