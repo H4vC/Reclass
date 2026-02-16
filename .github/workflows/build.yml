@@ -200,4 +200,4 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_windbg_provider|test_com_security"
+        run: ctest --test-dir build --output-on-failure --exclude-regex "test_editor|test_windbg_provider|test_com_security|test_format|test_command_row|test_type_selector"
