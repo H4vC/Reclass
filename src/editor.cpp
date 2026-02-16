@@ -1401,7 +1401,11 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         auto* me = static_cast<QMouseEvent*>(event);
         int margin0Width = (int)m_sci->SendScintilla(
             QsciScintillaBase::SCI_GETMARGINWIDTHN, 0UL, 0L);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         if ((int)me->position().x() < margin0Width) {
+#else
+        if ((int)me->pos().x() < margin0Width) {
+#endif
             m_relativeOffsets = !m_relativeOffsets;
             reformatMargins();
             return true;
