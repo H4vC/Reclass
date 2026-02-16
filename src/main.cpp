@@ -1,5 +1,4 @@
 #include "mainwindow.h"
-#include "qt5compat.h"
 #include "generator.h"
 #include "mcp/mcp_bridge.h"
 #include <QApplication>
@@ -360,14 +359,14 @@ QIcon MainWindow::makeIcon(const QString& svgPath) {
 void MainWindow::createMenus() {
     // File
     auto* file = m_titleBar->menuBar()->addMenu("&File");
-    rcx::compat::addAction(file, "&New", QKeySequence::New, this, &MainWindow::newDocument);
-    rcx::compat::addAction(file, "New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::newFile);
-    rcx::compat::addAction(file, makeIcon(":/vsicons/folder-opened.svg"), "&Open...", QKeySequence::Open, this, &MainWindow::openFile);
+    file->addAction("&New", QKeySequence::New, this, &MainWindow::newDocument);
+    file->addAction("New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::newFile);
+    file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", QKeySequence::Open, this, &MainWindow::openFile);
     file->addSeparator();
-    rcx::compat::addAction(file, makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
-    rcx::compat::addAction(file, makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
+    file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
+    file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
     file->addSeparator();
-    rcx::compat::addAction(file, "&Unload Project", QKeySequence(Qt::CTRL | Qt::Key_W), this, &MainWindow::closeFile);
+    file->addAction("&Unload Project", QKeySequence(Qt::CTRL | Qt::Key_W), this, &MainWindow::closeFile);
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
     file->addSeparator();
@@ -375,12 +374,12 @@ void MainWindow::createMenus() {
     file->addSeparator();
     file->addAction(makeIcon(":/vsicons/settings-gear.svg"), "&Options...", this, &MainWindow::showOptionsDialog);
     file->addSeparator();
-    rcx::compat::addAction(file, makeIcon(":/vsicons/close.svg"), "E&xit", QKeySequence(Qt::Key_Close), this, &QMainWindow::close);
+    file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", QKeySequence(Qt::Key_Close), this, &QMainWindow::close);
 
     // Edit
     auto* edit = m_titleBar->menuBar()->addMenu("&Edit");
-    rcx::compat::addAction(edit, makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
-    rcx::compat::addAction(edit, makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
+    edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
+    edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
     edit->addSeparator();
     edit->addAction("&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
 
