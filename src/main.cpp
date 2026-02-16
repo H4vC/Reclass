@@ -356,37 +356,46 @@ QIcon MainWindow::makeIcon(const QString& svgPath) {
     return QIcon(svgPath);
 }
 
+template < typename...Args >
+inline QAction* Qt5Qt6AddAction(QWidget* parent, const QString &text, const QKeySequence &shortcut, const QIcon &icon, Args&&...args)
+{
+    QAction *result = parent->addAction(icon, text, shortcut);
+    parent->connect(result, &QAction::triggered, std::forward<Args>(args)...);
+    return result;
+}
+
 void MainWindow::createMenus() {
     // File
     auto* file = m_titleBar->menuBar()->addMenu("&File");
-    file->addAction("&New", QKeySequence::New, this, &MainWindow::newDocument);
-    file->addAction("New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), this, &MainWindow::newFile);
-    file->addAction(makeIcon(":/vsicons/folder-opened.svg"), "&Open...", QKeySequence::Open, this, &MainWindow::openFile);
+    Qt5Qt6AddAction(file, "&New",  QKeySequence::New, QIcon(), this, &MainWindow::newDocument);
+    Qt5Qt6AddAction(file, "New &Tab", QKeySequence(Qt::CTRL | Qt::Key_T), QIcon(), this, &MainWindow::newFile);
+    Qt5Qt6AddAction(file, "&Open...", QKeySequence::Open, makeIcon(":/vsicons/folder-opened.svg"), this, &MainWindow::openFile);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/save.svg"), "&Save", QKeySequence::Save, this, &MainWindow::saveFile);
-    file->addAction(makeIcon(":/vsicons/save-as.svg"), "Save &As...", QKeySequence::SaveAs, this, &MainWindow::saveFileAs);
+    Qt5Qt6AddAction(file, "&Save", QKeySequence::Save, makeIcon(":/vsicons/save.svg"), this, &MainWindow::saveFile);
+    Qt5Qt6AddAction(file, "Save &As...", QKeySequence::SaveAs, makeIcon(":/vsicons/save-as.svg"), this, &MainWindow::saveFileAs);
     file->addSeparator();
-    file->addAction("&Unload Project", QKeySequence(Qt::CTRL | Qt::Key_W), this, &MainWindow::closeFile);
+    Qt5Qt6AddAction(file, "&Unload Project", QKeySequence(Qt::CTRL | Qt::Key_W), QIcon(), this, &MainWindow::closeFile);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/export.svg"), "Export &C++ Header...", this, &MainWindow::exportCpp);
+    Qt5Qt6AddAction(file, "Export &C++ Header...", QKeySequence::UnknownKey, makeIcon(":/vsicons/export.svg"), this, &MainWindow::exportCpp);
     file->addSeparator();
-    m_mcpAction = file->addAction(QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool() ? "Stop &MCP Server" : "Start &MCP Server", this, &MainWindow::toggleMcp);
+    const auto itemName = QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool() ? "Stop &MCP Server" : "Start &MCP Server";
+    m_mcpAction = Qt5Qt6AddAction(file, itemName, QKeySequence::UnknownKey, QIcon(), this, &MainWindow::toggleMcp);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/settings-gear.svg"), "&Options...", this, &MainWindow::showOptionsDialog);
+    Qt5Qt6AddAction(file, "&Options...", QKeySequence::UnknownKey, makeIcon(":/vsicons/settings-gear.svg"), this, &MainWindow::showOptionsDialog);
     file->addSeparator();
-    file->addAction(makeIcon(":/vsicons/close.svg"), "E&xit", QKeySequence(Qt::Key_Close), this, &QMainWindow::close);
+    Qt5Qt6AddAction(file, "E&xit", QKeySequence(Qt::Key_Close), makeIcon(":/vsicons/close.svg"), this, &QMainWindow::close);
 
     // Edit
     auto* edit = m_titleBar->menuBar()->addMenu("&Edit");
-    edit->addAction(makeIcon(":/vsicons/arrow-left.svg"), "&Undo", QKeySequence::Undo, this, &MainWindow::undo);
-    edit->addAction(makeIcon(":/vsicons/arrow-right.svg"), "&Redo", QKeySequence::Redo, this, &MainWindow::redo);
+    Qt5Qt6AddAction(edit, "&Undo", QKeySequence::Undo, makeIcon(":/vsicons/arrow-left.svg"), this, &MainWindow::undo);
+    Qt5Qt6AddAction(edit, "&Redo", QKeySequence::Redo, makeIcon(":/vsicons/arrow-right.svg"), this, &MainWindow::redo);
     edit->addSeparator();
-    edit->addAction("&Type Aliases...", this, &MainWindow::showTypeAliasesDialog);
+    Qt5Qt6AddAction(edit, "&Type Aliases...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::showTypeAliasesDialog);
 
     // View
     auto* view = m_titleBar->menuBar()->addMenu("&View");
-    view->addAction(makeIcon(":/vsicons/split-horizontal.svg"), "Split &Horizontal", this, &MainWindow::splitView);
-    view->addAction(makeIcon(":/vsicons/chrome-close.svg"), "&Unsplit", this, &MainWindow::unsplitView);
+    Qt5Qt6AddAction(view, "Split &Horizontal", QKeySequence::UnknownKey, makeIcon(":/vsicons/split-horizontal.svg"), this, &MainWindow::splitView);
+    Qt5Qt6AddAction(view, "&Unsplit", QKeySequence::UnknownKey, makeIcon(":/vsicons/chrome-close.svg"), this, &MainWindow::unsplitView);
     view->addSeparator();
     auto* fontMenu = view->addMenu(makeIcon(":/vsicons/text-size.svg"), "&Font");
     auto* fontGroup = new QActionGroup(this);
@@ -421,18 +430,18 @@ void MainWindow::createMenus() {
         });
     }
     themeMenu->addSeparator();
-    themeMenu->addAction("Edit Theme...", this, &MainWindow::editTheme);
+    Qt5Qt6AddAction(themeMenu, "Edit Theme...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::editTheme);
 
     view->addSeparator();
     view->addAction(m_workspaceDock->toggleViewAction());
 
     // Plugins
     auto* plugins = m_titleBar->menuBar()->addMenu("&Plugins");
-    plugins->addAction("&Manage Plugins...", this, &MainWindow::showPluginsDialog);
+    Qt5Qt6AddAction(plugins, "&Manage Plugins...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::showPluginsDialog);
 
     // Help
     auto* help = m_titleBar->menuBar()->addMenu("&Help");
-    help->addAction(makeIcon(":/vsicons/question.svg"), "&About Reclass", this, &MainWindow::about);
+    Qt5Qt6AddAction(help, "&About Reclass", QKeySequence::UnknownKey, makeIcon(":/vsicons/question.svg"), this, &MainWindow::about);
 }
 
 void MainWindow::createStatusBar() {
