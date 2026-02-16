@@ -59,6 +59,10 @@ add_executable(Reclass
     src/themes/thememanager.cpp
     src/themes/themeeditor.h
     src/themes/themeeditor.cpp
+    src/import_reclass_xml.h
+    src/import_reclass_xml.cpp
+    src/import_source.h
+    src/import_source.cpp
     src/mainwindow.h
     src/optionsdialog.h
     src/optionsdialog.cpp
@@ -153,13 +157,6 @@ if(BUILD_TESTING)
     target_link_libraries(test_compose PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_compose COMMAND test_compose)
 
-    add_executable(test_editor tests/test_editor.cpp src/editor.cpp src/compose.cpp src/format.cpp src/providerregistry.cpp
-        src/themes/theme.cpp src/themes/thememanager.cpp)
-    target_include_directories(test_editor PRIVATE src)
-    target_link_libraries(test_editor PRIVATE
-        ${QT}::Widgets ${QT}::PrintSupport ${QT}::Test
-        QScintilla::QScintilla)
-    add_test(NAME test_editor COMMAND test_editor)
 
     add_executable(test_provider tests/test_provider.cpp)
     target_include_directories(test_provider PRIVATE src)
@@ -266,6 +263,18 @@ if(BUILD_TESTING)
     target_include_directories(test_options_dialog PRIVATE src)
     target_link_libraries(test_options_dialog PRIVATE ${QT}::Widgets ${QT}::Test)
     add_test(NAME test_options_dialog COMMAND test_options_dialog)
+
+    add_executable(test_import_xml tests/test_import_xml.cpp
+        src/import_reclass_xml.cpp src/format.cpp src/compose.cpp)
+    target_include_directories(test_import_xml PRIVATE src)
+    target_link_libraries(test_import_xml PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_import_xml COMMAND test_import_xml)
+
+    add_executable(test_import_source tests/test_import_source.cpp
+        src/import_source.cpp src/format.cpp src/compose.cpp)
+    target_include_directories(test_import_source PRIVATE src)
+    target_link_libraries(test_import_source PRIVATE ${QT}::Core ${QT}::Test)
+    add_test(NAME test_import_source COMMAND test_import_source)
 
     if(WIN32)
         add_executable(test_windbg_provider tests/test_windbg_provider.cpp

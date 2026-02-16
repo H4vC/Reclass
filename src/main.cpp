@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 #include "generator.h"
+#include "import_reclass_xml.h"
+#include "import_source.h"
 #include "mcp/mcp_bridge.h"
 #include <QApplication>
 #include <QMainWindow>
@@ -379,6 +381,8 @@ void MainWindow::createMenus() {
     Qt5Qt6AddAction(file, "&Unload Project", QKeySequence(Qt::CTRL | Qt::Key_W), QIcon(), this, &MainWindow::closeFile);
     file->addSeparator();
     Qt5Qt6AddAction(file, "Export &C++ Header...", QKeySequence::UnknownKey, makeIcon(":/vsicons/export.svg"), this, &MainWindow::exportCpp);
+    Qt5Qt6AddAction(file, "Import from &Source...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importFromSource);
+    Qt5Qt6AddAction(file, "&Import ReClass XML...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importReclassXml);
     file->addSeparator();
     const auto itemName = QSettings("Reclass", "Reclass").value("autoStartMcp", false).toBool() ? "Stop &MCP Server" : "Start &MCP Server";
     m_mcpAction = Qt5Qt6AddAction(file, itemName, QKeySequence::UnknownKey, QIcon(), this, &MainWindow::toggleMcp);
@@ -1311,6 +1315,85 @@ void MainWindow::exportCpp() {
     m_statusLabel->setText("Exported to " + QFileInfo(path).fileName());
 }
 
+// ── Import ReClass XML ──
+
+void MainWindow::importReclassXml() {
+    QString filePath = QFileDialog::getOpenFileName(this,
+        "Import ReClass XML", {},
+        "ReClass XML (*.reclass *.MemeCls *.xml);;All Files (*)");
+    if (filePath.isEmpty()) return;
+
+    QString error;
+    NodeTree tree = rcx::importReclassXml(filePath, &error);
+    if (tree.nodes.isEmpty()) {
+        QMessageBox::warning(this, "Import Failed", error.isEmpty()
+            ? QStringLiteral("No data found in file") : error);
+        return;
+    }
+
+    // Count root structs for status message
+    int classCount = 0;
+    for (const auto& n : tree.nodes)
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) classCount++;
+
+    auto* doc = new RcxDocument(this);
+    doc->tree = std::move(tree);
+
+    m_mdiArea->closeAllSubWindows();
+    createTab(doc);
+    rebuildWorkspaceModel();
+    m_statusLabel->setText(QStringLiteral("Imported %1 classes from %2")
+        .arg(classCount).arg(QFileInfo(filePath).fileName()));
+}
+
+// ── Import from Source ──
+
+void MainWindow::importFromSource() {
+    QDialog dlg(this);
+    dlg.setWindowTitle("Import from Source");
+    dlg.resize(700, 600);
+
+    auto* layout = new QVBoxLayout(&dlg);
+
+    auto* sci = new QsciScintilla(&dlg);
+    setupRenderedSci(sci);
+    sci->setReadOnly(false);
+    sci->setMarginWidth(0, "00000");
+    layout->addWidget(sci);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Ok)->setText("Import");
+    layout->addWidget(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    QString source = sci->text();
+    if (source.trimmed().isEmpty()) return;
+
+    QString error;
+    NodeTree tree = rcx::importFromSource(source, &error);
+    if (tree.nodes.isEmpty()) {
+        QMessageBox::warning(this, "Import Failed", error.isEmpty()
+            ? QStringLiteral("No struct definitions found") : error);
+        return;
+    }
+
+    int classCount = 0;
+    for (const auto& n : tree.nodes)
+        if (n.parentId == 0 && n.kind == NodeKind::Struct) classCount++;
+
+    auto* doc = new RcxDocument(this);
+    doc->tree = std::move(tree);
+
+    m_mdiArea->closeAllSubWindows();
+    createTab(doc);
+    rebuildWorkspaceModel();
+    m_statusLabel->setText(QStringLiteral("Imported %1 classes from source").arg(classCount));
+}
+
 // ── Type Aliases Dialog ──
 
 void MainWindow::showTypeAliasesDialog() {
@@ -1390,8 +1473,45 @@ QMdiSubWindow* MainWindow::project_open(const QString& path) {
     QString filePath = path;
     if (filePath.isEmpty()) {
         filePath = QFileDialog::getOpenFileName(this,
-            "Open Definition", {}, "Reclass (*.rcx);;JSON (*.json);;All (*)");
+            "Open Definition", {},
+            "All Supported (*.rcx *.json *.reclass *.MemeCls *.xml)"
+            ";;Reclass (*.rcx)"
+            ";;JSON (*.json)"
+            ";;ReClass XML (*.reclass *.MemeCls *.xml)"
+            ";;All (*)");
         if (filePath.isEmpty()) return nullptr;
+    }
+
+    // Detect if this is an XML-based ReClass file by checking first bytes
+    bool isXml = false;
+    {
+        QFile probe(filePath);
+        if (probe.open(QIODevice::ReadOnly)) {
+            QByteArray head = probe.read(64);
+            isXml = head.trimmed().startsWith("<?xml") || head.trimmed().startsWith("<ReClass")
+                    || head.trimmed().startsWith("<MemeCls");
+        }
+    }
+
+    if (isXml) {
+        QString error;
+        NodeTree tree = rcx::importReclassXml(filePath, &error);
+        if (tree.nodes.isEmpty()) {
+            QMessageBox::warning(this, "Import Failed", error.isEmpty()
+                ? QStringLiteral("No data found in file") : error);
+            return nullptr;
+        }
+        auto* doc = new RcxDocument(this);
+        doc->tree = std::move(tree);
+        m_mdiArea->closeAllSubWindows();
+        auto* sub = createTab(doc);
+        rebuildWorkspaceModel();
+        int classCount = 0;
+        for (const auto& n : doc->tree.nodes)
+            if (n.parentId == 0 && n.kind == NodeKind::Struct) classCount++;
+        m_statusLabel->setText(QStringLiteral("Imported %1 classes from %2")
+            .arg(classCount).arg(QFileInfo(filePath).fileName()));
+        return sub;
     }
 
     auto* doc = new RcxDocument(this);
