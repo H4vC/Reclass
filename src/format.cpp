@@ -273,6 +273,22 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
         return s;
     }
+    case NodeKind::FuncPtr32: {
+        uint32_t val = prov.readU32(addr);
+        if (!display) return rawHex(val, 8);
+        QString s = fmtPointer32(val);
+        QString sym = prov.getSymbol((uint64_t)val);
+        if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
+        return s;
+    }
+    case NodeKind::FuncPtr64: {
+        uint64_t val = prov.readU64(addr);
+        if (!display) return rawHex(val, 16);
+        QString s = fmtPointer64(val);
+        QString sym = prov.getSymbol(val);
+        if (!sym.isEmpty()) s += QStringLiteral("  ") + sym;
+        return s;
+    }
     case NodeKind::Vec2:
     case NodeKind::Vec3:
     case NodeKind::Vec4: {
@@ -543,6 +559,14 @@ QByteArray parseValue(NodeKind kind, const QString& text, bool* ok) {
         qulonglong val = stripHex(s).toULongLong(ok, 16);
         return *ok ? toBytes<uint64_t>(val) : QByteArray{};
     }
+    case NodeKind::FuncPtr32: {
+        uint val = stripHex(s).toUInt(ok, 16);
+        return *ok ? toBytes<uint32_t>(val) : QByteArray{};
+    }
+    case NodeKind::FuncPtr64: {
+        qulonglong val = stripHex(s).toULongLong(ok, 16);
+        return *ok ? toBytes<uint64_t>(val) : QByteArray{};
+    }
     case NodeKind::UTF8: {
         *ok = true;
         if (s.startsWith('"') && s.endsWith('"'))
@@ -571,7 +595,8 @@ QString validateValue(NodeKind kind, const QString& text) {
 
     // For integer/hex types, validate character set first
     bool isHexKind = (kind >= NodeKind::Hex8 && kind <= NodeKind::Hex64)
-                  || kind == NodeKind::Pointer32 || kind == NodeKind::Pointer64;
+                  || kind == NodeKind::Pointer32 || kind == NodeKind::Pointer64
+                  || kind == NodeKind::FuncPtr32 || kind == NodeKind::FuncPtr64;
     bool isIntKind = (kind >= NodeKind::Int8 && kind <= NodeKind::UInt64);
 
     if (isHexKind || isIntKind) {

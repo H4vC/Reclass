@@ -1226,6 +1226,34 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
             });
             addedQuickConvert = true;
         }
+        if (node.kind == NodeKind::Hex64 || node.kind == NodeKind::Pointer64) {
+            menu.addAction("Change to fnptr64", [this, nodeId]() {
+                int ni = m_doc->tree.indexOfId(nodeId);
+                if (ni >= 0) changeNodeKind(ni, NodeKind::FuncPtr64);
+            });
+            addedQuickConvert = true;
+        }
+        if (node.kind == NodeKind::Hex32 || node.kind == NodeKind::Pointer32) {
+            menu.addAction("Change to fnptr32", [this, nodeId]() {
+                int ni = m_doc->tree.indexOfId(nodeId);
+                if (ni >= 0) changeNodeKind(ni, NodeKind::FuncPtr32);
+            });
+            addedQuickConvert = true;
+        }
+        if (node.kind == NodeKind::FuncPtr64) {
+            menu.addAction("Change to ptr64", [this, nodeId]() {
+                int ni = m_doc->tree.indexOfId(nodeId);
+                if (ni >= 0) changeNodeKind(ni, NodeKind::Pointer64);
+            });
+            addedQuickConvert = true;
+        }
+        if (node.kind == NodeKind::FuncPtr32) {
+            menu.addAction("Change to ptr32", [this, nodeId]() {
+                int ni = m_doc->tree.indexOfId(nodeId);
+                if (ni >= 0) changeNodeKind(ni, NodeKind::Pointer32);
+            });
+            addedQuickConvert = true;
+        }
         if (addedQuickConvert)
             menu.addSeparator();
 
@@ -2182,8 +2210,6 @@ void RcxController::onRefreshTick() {
     m_readGen = m_refreshGen;
 
     auto prov = m_doc->provider;
-    qDebug() << "[Refresh] reading" << ranges.size() << "ranges from base"
-             << Qt::hex << prov->base();
     m_refreshWatcher->setFuture(QtConcurrent::run([prov, ranges]() -> PageMap {
         constexpr uint64_t kPageSize = 4096;
         constexpr uint64_t kPageMask = ~(kPageSize - 1);

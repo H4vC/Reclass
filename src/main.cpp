@@ -254,7 +254,7 @@ static void applyGlobalTheme(const rcx::Theme& theme) {
     pal.setColor(QPalette::HighlightedText, theme.text);
     pal.setColor(QPalette::ToolTipBase,     theme.backgroundAlt);
     pal.setColor(QPalette::ToolTipText,     theme.text);
-    pal.setColor(QPalette::Mid,             theme.border);
+    pal.setColor(QPalette::Mid,             theme.hover);
     pal.setColor(QPalette::Dark,            theme.background);
     pal.setColor(QPalette::Light,           theme.textFaint);
     pal.setColor(QPalette::Link,            theme.indHoverSpan);

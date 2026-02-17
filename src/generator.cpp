@@ -44,6 +44,8 @@ static QString cTypeName(NodeKind kind) {
     case NodeKind::Bool:      return QStringLiteral("bool");
     case NodeKind::Pointer32: return QStringLiteral("uint32_t");
     case NodeKind::Pointer64: return QStringLiteral("uint64_t");
+    case NodeKind::FuncPtr32: return QStringLiteral("uint32_t");
+    case NodeKind::FuncPtr64: return QStringLiteral("uint64_t");
     case NodeKind::Vec2:      return QStringLiteral("float");
     case NodeKind::Vec3:      return QStringLiteral("float");
     case NodeKind::Vec4:      return QStringLiteral("float");
@@ -143,6 +145,10 @@ static QString emitField(GenContext& ctx, const Node& node) {
         }
         return QStringLiteral("    void* %1;").arg(name) + oc;
     }
+    case NodeKind::FuncPtr32:
+        return QStringLiteral("    void (*%1)();").arg(name) + oc;
+    case NodeKind::FuncPtr64:
+        return QStringLiteral("    void (*%1)();").arg(name) + oc;
     default:
         return QStringLiteral("    %1 %2;").arg(ctx.cType(node.kind), name) + oc;
     }

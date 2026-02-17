@@ -26,6 +26,7 @@ enum class NodeKind : uint8_t {
     UInt8, UInt16, UInt32, UInt64,
     Float, Double, Bool,
     Pointer32, Pointer64,
+    FuncPtr32, FuncPtr64,
     Vec2, Vec3, Vec4, Mat4x4,
     UTF8, UTF16,
     Struct, Array
@@ -78,6 +79,8 @@ inline constexpr KindMeta kKindMeta[] = {
     {NodeKind::Bool,      "Bool",      "bool",        1,  1,  1, KF_None},
     {NodeKind::Pointer32, "Pointer32", "ptr32",       4,  1,  4, KF_None},
     {NodeKind::Pointer64, "Pointer64", "ptr64",       8,  1,  8, KF_None},
+    {NodeKind::FuncPtr32, "FuncPtr32", "fnptr32",     4,  1,  4, KF_None},
+    {NodeKind::FuncPtr64, "FuncPtr64", "fnptr64",     8,  1,  8, KF_None},
     {NodeKind::Vec2,      "Vec2",      "vec2",        8,  1,  4, KF_Vector},
     {NodeKind::Vec3,      "Vec3",      "vec3",       12,  1,  4, KF_Vector},
     {NodeKind::Vec4,      "Vec4",      "vec4",       16,  1,  4, KF_Vector},
@@ -135,6 +138,9 @@ inline constexpr bool isVectorKind(NodeKind k) {
 }
 inline constexpr bool isMatrixKind(NodeKind k) {
     return k == NodeKind::Mat4x4;
+}
+inline constexpr bool isFuncPtr(NodeKind k) {
+    return k == NodeKind::FuncPtr32 || k == NodeKind::FuncPtr64;
 }
 
 inline QStringList allTypeNamesForUI(bool stripBrackets = false) {
