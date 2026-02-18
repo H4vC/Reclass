@@ -16,7 +16,7 @@ using namespace rcx;
 // ── Fixture: small tree with diverse field types ──
 
 static void buildValidationTree(NodeTree& tree) {
-    tree.baseAddress = 0x1000;
+    tree.baseAddress = 0;
 
     Node root;
     root.kind = NodeKind::Struct;

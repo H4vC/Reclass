@@ -62,7 +62,6 @@ public:
 
     bool isLive() const override { return m_isLive; }
     uint64_t base() const override { return m_base; }
-    void setBase(uint64_t b) override { m_base = b; }
 
 private:
     void initInterfaces();   // get IDebugDataSpaces/Control/Symbols from client

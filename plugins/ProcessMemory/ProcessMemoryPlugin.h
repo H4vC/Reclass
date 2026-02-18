@@ -27,11 +27,16 @@ public:
 
     bool isLive() const override { return true; }
     uint64_t base() const override { return m_base; }
-    void setBase(uint64_t b) override { m_base = b; }
+    bool isReadable(uint64_t, int len) const override {
+#ifdef _WIN32
+        return m_handle && len >= 0;
+#elif defined(__linux__)
+        return m_fd >= 0 && len >= 0;
+#endif
+    }
 
     // Process-specific helpers
     uint32_t pid() const { return m_pid; }
-    uint64_t baseAddress() const { return m_base; }
     void refreshModules() { m_modules.clear(); cacheModules(); }
 
 private:

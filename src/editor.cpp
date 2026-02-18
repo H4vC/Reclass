@@ -255,6 +255,103 @@ public:
     }
 };
 
+class StructPreviewPopup : public QFrame {
+    uint64_t m_nodeId = 0;
+    QString  m_body;
+    QLabel*  m_titleLabel = nullptr;
+    QLabel*  m_bodyLabel  = nullptr;
+public:
+    explicit StructPreviewPopup(QWidget* parent)
+        : QFrame(parent, Qt::ToolTip | Qt::FramelessWindowHint)
+    {
+        setAttribute(Qt::WA_DeleteOnClose, false);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setFrameShape(QFrame::NoFrame);
+        setAutoFillBackground(true);
+
+        auto* vbox = new QVBoxLayout(this);
+        vbox->setContentsMargins(8, 6, 8, 6);
+        vbox->setSpacing(2);
+
+        m_titleLabel = new QLabel;
+        QFont bold = m_titleLabel->font();
+        bold.setBold(true);
+        m_titleLabel->setFont(bold);
+        vbox->addWidget(m_titleLabel);
+
+        auto* sep = new QFrame;
+        sep->setFrameShape(QFrame::HLine);
+        sep->setFrameShadow(QFrame::Plain);
+        sep->setFixedHeight(1);
+        vbox->addWidget(sep);
+
+        m_bodyLabel = new QLabel;
+        m_bodyLabel->setTextFormat(Qt::PlainText);
+        m_bodyLabel->setWordWrap(false);
+        vbox->addWidget(m_bodyLabel);
+    }
+
+    uint64_t nodeId() const { return m_nodeId; }
+
+    void populate(uint64_t nodeId, const QString& title, const QString& body,
+                  const QFont& font) {
+        if (nodeId == m_nodeId && body == m_body && isVisible())
+            return;
+
+        m_nodeId = nodeId;
+        m_body = body;
+
+        const auto& theme = ThemeManager::instance().current();
+        QPalette pal;
+        pal.setColor(QPalette::Window, theme.backgroundAlt);
+        pal.setColor(QPalette::WindowText, theme.text);
+        setPalette(pal);
+
+        QFont bold = font;
+        bold.setBold(true);
+        m_titleLabel->setFont(bold);
+        m_titleLabel->setText(title);
+        m_titleLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(theme.text.name()));
+
+        for (auto* child : findChildren<QFrame*>()) {
+            if (child->frameShape() == QFrame::HLine) {
+                QPalette sp;
+                sp.setColor(QPalette::WindowText, theme.border);
+                child->setPalette(sp);
+                break;
+            }
+        }
+
+        m_bodyLabel->setFont(font);
+        m_bodyLabel->setText(body);
+        m_bodyLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(theme.text.name()));
+
+        setMaximumWidth(600);
+        adjustSize();
+    }
+
+    void showAt(const QPoint& globalPos) {
+        QSize sz = sizeHint();
+        QRect screen = QApplication::screenAt(globalPos)
+            ? QApplication::screenAt(globalPos)->availableGeometry()
+            : QRect(0, 0, 1920, 1080);
+        int x = qMin(globalPos.x(), screen.right() - sz.width());
+        int y = globalPos.y();
+        if (y + sz.height() > screen.bottom())
+            y = globalPos.y() - sz.height() - 4;
+        move(x, y);
+        if (!isVisible()) show();
+    }
+
+    void dismiss() {
+        if (isVisible()) hide();
+        m_nodeId = 0;
+        m_body.clear();
+    }
+};
+
 static constexpr int IND_EDITABLE   = 8;
 static constexpr int IND_HEX_DIM    = 9;
 static constexpr int IND_BASE_ADDR  = 10;  // Default text color override for command row address
@@ -2012,9 +2109,11 @@ bool RcxEditor::beginInlineEdit(EditTarget target, int line, int col) {
     m_hoveredNodeId = 0;
     m_hoveredLine = -1;
     applyHoverHighlight();
-    // Dismiss hover popup so it gets recreated with Set buttons once edit starts
+    // Dismiss hover popups so they get recreated with Set buttons once edit starts
     if (m_historyPopup)
         static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
+    if (m_structPreviewPopup)
+        static_cast<StructPreviewPopup*>(m_structPreviewPopup)->dismiss();
     // Clear editable-token color hints (de-emphasize non-active tokens)
     clearIndicatorLine(IND_EDITABLE, m_hintLine);
     m_hintLine = -1;
@@ -2580,9 +2679,11 @@ void RcxEditor::applyHoverCursor() {
             if (!showPopup && m_historyPopup && m_historyPopup->isVisible())
                 static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
         }
-        // Always dismiss disasm popup during inline editing
+        // Always dismiss disasm/preview popups during inline editing
         if (m_disasmPopup && m_disasmPopup->isVisible())
             static_cast<DisasmPopup*>(m_disasmPopup)->dismiss();
+        if (m_structPreviewPopup && m_structPreviewPopup->isVisible())
+            static_cast<StructPreviewPopup*>(m_structPreviewPopup)->dismiss();
         return;
     }
 
@@ -2593,6 +2694,8 @@ void RcxEditor::applyHoverCursor() {
             static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
         if (m_disasmPopup && !m_applyingDocument)
             static_cast<DisasmPopup*>(m_disasmPopup)->dismiss();
+        if (m_structPreviewPopup && !m_applyingDocument)
+            static_cast<StructPreviewPopup*>(m_structPreviewPopup)->dismiss();
         m_sci->viewport()->setCursor(Qt::ArrowCursor);
         return;
     }
@@ -2755,11 +2858,8 @@ void RcxEditor::applyHoverCursor() {
                     if (!isVoidPtr || node.refId == 0) {
                         bool is64 = (lm.nodeKind == NodeKind::FuncPtr64
                                      || lm.nodeKind == NodeKind::Pointer64);
-                        // Use composed address (correct for pointer-expanded nodes)
-                        // not node.offset (which is just offset within struct definition).
-                        uint64_t provAddr = lm.offsetAddr >= m_disasmTree->baseAddress
-                            ? lm.offsetAddr - m_disasmTree->baseAddress
-                            : static_cast<uint64_t>(node.offset);
+                        // Use composed address (absolute, correct for pointer-expanded nodes)
+                        uint64_t provAddr = lm.offsetAddr;
                         uint64_t ptrVal = is64
                             ? m_disasmProvider->readU64(provAddr)
                             : (uint64_t)m_disasmProvider->readU32(provAddr);
@@ -2768,13 +2868,11 @@ void RcxEditor::applyHoverCursor() {
                             // Read code bytes from the function target address.
                             // Use the real provider (not snapshot) because function
                             // code lives at arbitrary process addresses that aren't
-                            // in the snapshot page table.  The provider reads from
-                            // m_base + addr via ReadProcessMemory, so we convert
-                            // the absolute ptrVal to provider-relative.
+                            // in the snapshot page table.
                             const Provider* codeProv = m_disasmRealProv
                                 ? m_disasmRealProv : m_disasmProvider;
                             constexpr int kMaxRead = 128;
-                            uint64_t codeAddr = ptrVal - m_disasmTree->baseAddress;
+                            uint64_t codeAddr = ptrVal;
                             QByteArray bytes(kMaxRead, Qt::Uninitialized);
                             bool readOk = codeProv->read(codeAddr, bytes.data(), kMaxRead);
                             if (readOk) {
@@ -2835,6 +2933,70 @@ void RcxEditor::applyHoverCursor() {
         }
         if (!showDisasm && m_disasmPopup && m_disasmPopup->isVisible())
             static_cast<DisasmPopup*>(m_disasmPopup)->dismiss();
+    }
+
+    // Struct preview popup for collapsed typed pointers
+    {
+        bool showPreview = false;
+        if (m_disasmTree && m_disasmProvider && h.line >= 0 && h.line < m_meta.size()) {
+            const LineMeta& lm = m_meta[h.line];
+            bool isTypedPtr = (lm.nodeKind == NodeKind::Pointer32
+                               || lm.nodeKind == NodeKind::Pointer64)
+                              && !lm.pointerTargetName.isEmpty();
+            if (isTypedPtr && lm.foldCollapsed
+                && lm.nodeIdx >= 0 && lm.nodeIdx < m_disasmTree->nodes.size()) {
+                const Node& node = m_disasmTree->nodes[lm.nodeIdx];
+                if (node.refId != 0) {
+                    QString lineText = getLineText(m_sci, h.line);
+                    ColumnSpan vs = narrowPtrValueSpan(lm,
+                        valueSpan(lm, lineText.size(), lm.effectiveTypeW, lm.effectiveNameW),
+                        lineText);
+                    if (vs.valid && h.col >= vs.start && h.col < vs.end) {
+                        ComposeResult cr = rcx::compose(*m_disasmTree, *m_disasmProvider, node.refId);
+                        // Skip command row (line 0), take first 5 data lines
+                        QStringList lines = cr.text.split('\n');
+                        constexpr int kMaxLines = 5;
+                        QString body;
+                        int count = 0;
+                        for (int i = 1; i < lines.size() && count < kMaxLines; ++i) {
+                            if (!lines[i].isEmpty()) {
+                                if (count > 0) body += '\n';
+                                body += lines[i];
+                                ++count;
+                            }
+                        }
+                        if (!body.isEmpty()) {
+                            if (!m_structPreviewPopup)
+                                m_structPreviewPopup = new StructPreviewPopup(this);
+                            auto* popup = static_cast<StructPreviewPopup*>(m_structPreviewPopup);
+                            popup->populate(lm.nodeId,
+                                lm.pointerTargetName, body, editorFont());
+                            long linePos = m_sci->SendScintilla(
+                                QsciScintillaBase::SCI_POSITIONFROMLINE,
+                                (unsigned long)h.line);
+                            long byteOff = lineText.left(vs.start).toUtf8().size();
+                            int px = (int)m_sci->SendScintilla(
+                                QsciScintillaBase::SCI_POINTXFROMPOSITION,
+                                (unsigned long)0, linePos + byteOff);
+                            int py = (int)m_sci->SendScintilla(
+                                QsciScintillaBase::SCI_POINTYFROMPOSITION,
+                                (unsigned long)0, linePos);
+                            int lh = (int)m_sci->SendScintilla(
+                                QsciScintillaBase::SCI_TEXTHEIGHT,
+                                (unsigned long)h.line);
+                            QPoint anchor = m_sci->viewport()->mapToGlobal(
+                                QPoint(px, py + lh));
+                            popup->showAt(anchor);
+                            showPreview = true;
+                            if (m_historyPopup && m_historyPopup->isVisible())
+                                static_cast<ValueHistoryPopup*>(m_historyPopup)->dismiss();
+                        }
+                    }
+                }
+            }
+        }
+        if (!showPreview && m_structPreviewPopup && m_structPreviewPopup->isVisible())
+            static_cast<StructPreviewPopup*>(m_structPreviewPopup)->dismiss();
     }
 
     // Determine cursor shape based on interaction type

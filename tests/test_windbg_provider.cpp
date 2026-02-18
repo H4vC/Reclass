@@ -260,17 +260,6 @@ private slots:
         qDebug() << "Base address:" << QString("0x%1").arg(prov.base(), 0, 16);
     }
 
-    void provider_setBase()
-    {
-        WinDbgMemoryProvider prov(m_connString);
-        QVERIFY(prov.isValid());
-        uint64_t orig = prov.base();
-        prov.setBase(0x1000);
-        QCOMPARE(prov.base(), (uint64_t)0x1000);
-        prov.setBase(orig);
-        QCOMPARE(prov.base(), orig);
-    }
-
     // ── Read: MZ header on main thread ──
 
     void provider_read_mz_mainThread()

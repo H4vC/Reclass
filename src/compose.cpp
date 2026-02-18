@@ -78,12 +78,6 @@ static QString resolvePointerTarget(const NodeTree& tree, uint64_t refId) {
     return ref.structTypeName.isEmpty() ? ref.name : ref.structTypeName;
 }
 
-static inline uint64_t ptrToProviderAddr(const NodeTree& tree, uint64_t ptr) {
-    if (tree.baseAddress == 0) return ptr;
-    if (ptr >= tree.baseAddress) return ptr - tree.baseAddress;
-    return UINT64_MAX;  // Invalid: ptr below base address
-}
-
 static int64_t relOffsetFromRoot(const NodeTree& tree, int idx, uint64_t rootId) {
     int64_t total = 0;
     QSet<uint64_t> visited;
@@ -140,8 +134,8 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.isContinuation  = isCont;
         lm.lineKind        = isCont ? LineKind::Continuation : LineKind::Field;
         lm.nodeKind        = node.kind;
-        lm.offsetText      = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, isCont, state.offsetHexDigits);
-        lm.offsetAddr      = tree.baseAddress + absAddr;
+        lm.offsetText      = fmt::fmtOffsetMargin(absAddr, isCont, state.offsetHexDigits);
+        lm.offsetAddr      = absAddr;
         lm.ptrBase         = state.currentPtrBase;
         lm.markerMask      = computeMarkers(node, prov, absAddr, isCont, depth);
         lm.foldLevel       = computeFoldLevel(depth, false);
@@ -187,8 +181,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::Field;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
-        lm.offsetAddr = tree.baseAddress + absAddr;
+        lm.offsetText = fmt::fmtOffsetMargin(absAddr, false, state.offsetHexDigits);
+        lm.offsetAddr = absAddr;
         lm.ptrBase    = state.currentPtrBase;
         lm.nodeKind   = node.kind;
         lm.markerMask = (1u << M_CYCLE) | (1u << M_ERR);
@@ -206,8 +200,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::ArrayElementSeparator;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
-        lm.offsetAddr = tree.baseAddress + absAddr;
+        lm.offsetText = fmt::fmtOffsetMargin(absAddr, false, state.offsetHexDigits);
+        lm.offsetAddr = absAddr;
         lm.ptrBase    = state.currentPtrBase;
         lm.nodeKind   = node.kind;
         lm.foldLevel  = computeFoldLevel(depth, false);
@@ -236,8 +230,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.nodeId     = node.id;
         lm.depth      = depth;
         lm.lineKind   = LineKind::Header;
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
-        lm.offsetAddr = tree.baseAddress + absAddr;
+        lm.offsetText = fmt::fmtOffsetMargin(absAddr, false, state.offsetHexDigits);
+        lm.offsetAddr = absAddr;
         lm.ptrBase    = state.currentPtrBase;
         lm.nodeKind   = node.kind;
         lm.isRootHeader = false;
@@ -300,8 +294,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                 lm.lineKind   = LineKind::Field;
                 lm.nodeKind   = node.elementKind;
                 lm.isArrayElement = true;
-                lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + elemAddr, false, state.offsetHexDigits);
-                lm.offsetAddr = tree.baseAddress + elemAddr;
+                lm.offsetText = fmt::fmtOffsetMargin(elemAddr, false, state.offsetHexDigits);
+                lm.offsetAddr = elemAddr;
                 lm.ptrBase    = state.currentPtrBase;
                 lm.markerMask = computeMarkers(elem, prov, elemAddr, false, childDepth);
                 lm.foldLevel  = computeFoldLevel(childDepth, false);
@@ -353,9 +347,9 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                         lm.depth      = childDepth;
                         lm.lineKind   = LineKind::Header;
                         lm.offsetText = fmt::fmtOffsetMargin(
-                            tree.baseAddress + absAddr + child.offset, false,
+                            absAddr + child.offset, false,
                             state.offsetHexDigits);
-                        lm.offsetAddr = tree.baseAddress + absAddr + child.offset;
+                        lm.offsetAddr = absAddr + child.offset;
                         lm.ptrBase    = state.currentPtrBase;
                         lm.nodeKind   = child.kind;
                         lm.foldHead      = true;
@@ -399,8 +393,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.foldLevel  = computeFoldLevel(depth, false);
         lm.markerMask = 0;
         int sz = tree.structSpan(node.id, &state.childMap);
-        lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr + sz, false, state.offsetHexDigits);
-        lm.offsetAddr = tree.baseAddress + absAddr + sz;
+        lm.offsetText = fmt::fmtOffsetMargin(absAddr + sz, false, state.offsetHexDigits);
+        lm.offsetAddr = absAddr + sz;
         lm.ptrBase    = state.currentPtrBase;
         state.emitLine(fmt::fmtStructFooter(node, depth, sz), lm);
     }
@@ -445,8 +439,8 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             lm.nodeId     = node.id;
             lm.depth      = depth;
             lm.lineKind   = effectiveCollapsed ? LineKind::Field : LineKind::Header;
-            lm.offsetText = fmt::fmtOffsetMargin(tree.baseAddress + absAddr, false, state.offsetHexDigits);
-            lm.offsetAddr = tree.baseAddress + absAddr;
+            lm.offsetText = fmt::fmtOffsetMargin(absAddr, false, state.offsetHexDigits);
+            lm.offsetAddr = absAddr;
             lm.ptrBase    = state.currentPtrBase;
             lm.nodeKind   = node.kind;
             lm.foldHead      = true;
@@ -472,26 +466,21 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                     // Treat sentinel values as invalid pointers
                     if (ptrVal == UINT64_MAX || (node.kind == NodeKind::Pointer32 && ptrVal == 0xFFFFFFFF))
                         ptrVal = 0;
-                    else {
-                        uint64_t pBase = ptrToProviderAddr(tree, ptrVal);
-                        if (pBase == UINT64_MAX) ptrVal = 0;  // ptr below base: invalid
-                    }
                 }
             }
 
-            // Determine if pointer target is actually readable
-            uint64_t pBase = (ptrVal != 0) ? ptrToProviderAddr(tree, ptrVal) : 0;
+            // Pointer target address is used directly (absolute)
+            uint64_t pBase = ptrVal;
             bool ptrReadable = (ptrVal != 0) && prov.isReadable(pBase, 1);
 
             // For invalid/unreadable pointers: use NullProvider (shows zeros)
-            // and reset margin offsets (unsigned wrap cancels baseAddress)
             static NullProvider s_nullProv;
             const Provider& childProv = ptrReadable ? prov : static_cast<const Provider&>(s_nullProv);
             if (!ptrReadable)
-                pBase = (uint64_t)0 - tree.baseAddress;
+                pBase = 0;
 
             uint64_t savedPtrBase = state.currentPtrBase;
-            state.currentPtrBase = tree.baseAddress + pBase;
+            state.currentPtrBase = pBase;
 
             if (hasMaterialized) {
                 // Render materialized children at the pointer target address.
@@ -566,16 +555,16 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     for (int i = 0; i < tree.nodes.size(); i++)
         state.childMap[tree.nodes[i].parentId].append(i);
 
-    // Precompute absolute offsets
+    // Precompute absolute offsets (baseAddress + structure-relative offset)
     state.absOffsets.resize(tree.nodes.size());
     for (int i = 0; i < tree.nodes.size(); i++)
-        state.absOffsets[i] = tree.computeOffset(i);
+        state.absOffsets[i] = tree.baseAddress + tree.computeOffset(i);
 
     // Compute hex digit tier from max absolute address
     {
         uint64_t maxAddr = tree.baseAddress;
         for (int i = 0; i < tree.nodes.size(); i++) {
-            uint64_t addr = tree.baseAddress + (uint64_t)state.absOffsets[i];
+            uint64_t addr = (uint64_t)state.absOffsets[i];
             if (addr > maxAddr) maxAddr = addr;
         }
         if      (maxAddr <= 0xFFFFULL)             state.offsetHexDigits = 4;

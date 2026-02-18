@@ -287,7 +287,8 @@ QJsonObject McpBridge::handleToolsList(const QJsonValue& id) {
         {"name", "hex.read"},
         {"description", "Read raw bytes from provider. Returns hex dump, ASCII, and multi-type "
                         "interpretations (u8/u16/u32/u64/i32/f32/f64/ptr/string heuristics). "
-                        "Offset is provider-relative (0-based) unless baseRelative=true."},
+                        "Offset is tree-relative (0-based, baseAddress added automatically) "
+                        "unless baseRelative=true (offset is absolute)."},
         {"inputSchema", QJsonObject{
             {"type", "object"},
             {"properties", QJsonObject{
@@ -825,8 +826,8 @@ QJsonObject McpBridge::toolHexRead(const QJsonObject& args) {
     int64_t offset = static_cast<int64_t>(args.value("offset").toDouble());
     int length = qMin(args.value("length").toInt(64), 4096);
 
-    if (args.value("baseRelative").toBool())
-        offset -= (int64_t)tab->doc->tree.baseAddress;
+    if (!args.value("baseRelative").toBool())
+        offset += (int64_t)tab->doc->tree.baseAddress;
 
     if (offset < 0 || !prov->isReadable((uint64_t)offset, length))
         return makeTextResult("Cannot read at offset " + QString::number(offset), true);
@@ -907,8 +908,8 @@ QJsonObject McpBridge::toolHexWrite(const QJsonObject& args) {
     int64_t offset = static_cast<int64_t>(args.value("offset").toDouble());
     QString hexStr = args.value("hexBytes").toString().remove(' ');
 
-    if (args.value("baseRelative").toBool())
-        offset -= (int64_t)doc->tree.baseAddress;
+    if (!args.value("baseRelative").toBool())
+        offset += (int64_t)doc->tree.baseAddress;
 
     if (hexStr.size() % 2 != 0)
         return makeTextResult("Hex string must have even length", true);

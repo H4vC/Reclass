@@ -65,7 +65,7 @@ bool ProcessMemoryProvider::read(uint64_t addr, void* buf, int len) const
     if (!m_handle || len <= 0) return false;
 
     SIZE_T bytesRead = 0;
-    ReadProcessMemory(m_handle, (LPCVOID)(m_base + addr), buf, (SIZE_T)len, &bytesRead);
+    ReadProcessMemory(m_handle, (LPCVOID)(addr), buf, (SIZE_T)len, &bytesRead);
     if ((int)bytesRead < len)
         memset((char*)buf + bytesRead, 0, len - bytesRead);
     return bytesRead > 0;
@@ -76,7 +76,7 @@ bool ProcessMemoryProvider::write(uint64_t addr, const void* buf, int len)
     if (!m_handle || !m_writable || len <= 0) return false;
 
     SIZE_T bytesWritten = 0;
-    if (WriteProcessMemory(m_handle, (LPVOID)(m_base + addr), buf, (SIZE_T)len, &bytesWritten))
+    if (WriteProcessMemory(m_handle, (LPVOID)(addr), buf, (SIZE_T)len, &bytesWritten))
         return bytesWritten == (SIZE_T)len;
     return false;
 }
@@ -156,15 +156,13 @@ bool ProcessMemoryProvider::read(uint64_t addr, void* buf, int len) const
 {
     if (m_fd < 0 || len <= 0) return false;
 
-    uint64_t absAddr = m_base + addr;
-
     // Try process_vm_readv first (faster, no fd seek contention)
     struct iovec local;
     local.iov_base = buf;
     local.iov_len = static_cast<size_t>(len);
 
     struct iovec remote;
-    remote.iov_base = reinterpret_cast<void*>(absAddr);
+    remote.iov_base = reinterpret_cast<void*>(addr);
     remote.iov_len = static_cast<size_t>(len);
 
     ssize_t nread = process_vm_readv(m_pid, &local, 1, &remote, 1, 0);
@@ -172,7 +170,7 @@ bool ProcessMemoryProvider::read(uint64_t addr, void* buf, int len) const
         return true;
 
     // Fallback: pread on /proc/<pid>/mem
-    nread = ::pread(m_fd, buf, static_cast<size_t>(len), static_cast<off_t>(absAddr));
+    nread = ::pread(m_fd, buf, static_cast<size_t>(len), static_cast<off_t>(addr));
     return nread == static_cast<ssize_t>(len);
 }
 
@@ -180,15 +178,13 @@ bool ProcessMemoryProvider::write(uint64_t addr, const void* buf, int len)
 {
     if (m_fd < 0 || !m_writable || len <= 0) return false;
 
-    uint64_t absAddr = m_base + addr;
-
     // Try process_vm_writev first
     struct iovec local;
     local.iov_base = const_cast<void*>(buf);
     local.iov_len = static_cast<size_t>(len);
 
     struct iovec remote;
-    remote.iov_base = reinterpret_cast<void*>(absAddr);
+    remote.iov_base = reinterpret_cast<void*>(addr);
     remote.iov_len = static_cast<size_t>(len);
 
     ssize_t nwritten = process_vm_writev(m_pid, &local, 1, &remote, 1, 0);
@@ -196,7 +192,7 @@ bool ProcessMemoryProvider::write(uint64_t addr, const void* buf, int len)
         return true;
 
     // Fallback: pwrite on /proc/<pid>/mem
-    nwritten = ::pwrite(m_fd, buf, static_cast<size_t>(len), static_cast<off_t>(absAddr));
+    nwritten = ::pwrite(m_fd, buf, static_cast<size_t>(len), static_cast<off_t>(addr));
     return nwritten == static_cast<ssize_t>(len);
 }
 

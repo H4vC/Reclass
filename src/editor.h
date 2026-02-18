@@ -27,6 +27,7 @@ public:
     void restoreViewState(const ViewState& vs);
 
     QsciScintilla* scintilla() const { return m_sci; }
+    QWidget* structPreviewPopup() const { return m_structPreviewPopup; }
     const LineMeta* metaForLine(int line) const;
     int currentNodeIndex() const;
     void scrollToNodeId(uint64_t nodeId);
@@ -138,6 +139,7 @@ private:
     const QHash<uint64_t, ValueHistory>* m_valueHistory = nullptr;
     QWidget* m_historyPopup = nullptr;  // ValueHistoryPopup (file-local class in editor.cpp)
     QWidget* m_disasmPopup = nullptr;   // DisasmPopup (file-local class in editor.cpp)
+    QWidget* m_structPreviewPopup = nullptr; // StructPreviewPopup (file-local class in editor.cpp)
     const Provider* m_disasmProvider = nullptr;   // snapshot or real — for reading tree data
     const Provider* m_disasmRealProv = nullptr;   // real process provider — for reading code at arbitrary addresses
     const NodeTree* m_disasmTree = nullptr;

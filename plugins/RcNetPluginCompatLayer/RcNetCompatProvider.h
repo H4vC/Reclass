@@ -27,7 +27,6 @@ public:
     QString  kind() const override { return QStringLiteral("RcNet"); }
     bool     isLive() const override { return true; }
     uint64_t base() const override { return m_base; }
-    void     setBase(uint64_t b) override { m_base = b; }
     QString  getSymbol(uint64_t addr) const override;
 
     struct ModuleInfo {

@@ -1017,7 +1017,7 @@ private slots:
     void testPrimitiveArrayElements() {
         // Expanded primitive array should synthesize element lines dynamically
         NodeTree tree;
-        tree.baseAddress = 0x1000;
+        tree.baseAddress = 0;
 
         Node root;
         root.kind = NodeKind::Struct;
@@ -1934,7 +1934,7 @@ private slots:
     void testTextIsNonEmpty() {
         // Verify composed text is actually generated (not empty)
         NodeTree tree;
-        tree.baseAddress = 0x1000;
+        tree.baseAddress = 0;
 
         Node root;
         root.kind = NodeKind::Struct;

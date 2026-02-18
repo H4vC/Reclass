@@ -451,8 +451,6 @@ void RcxController::connectEditor(RcxEditor* editor) {
                             m_doc->dataPath.clear();
                             if (m_doc->tree.baseAddress == 0)
                                 m_doc->tree.baseAddress = newBase;
-                            else
-                                m_doc->provider->setBase(m_doc->tree.baseAddress);
                             resetSnapshot();
                             emit m_doc->documentChanged();
 
@@ -672,10 +670,7 @@ void RcxController::refresh() {
                 if (isFuncPtr(node.kind)) continue;
 
                 // Use the absolute address from compose (correct for pointer-expanded nodes)
-                // and convert to provider-relative by subtracting the base address.
-                uint64_t addr = lm.offsetAddr >= m_doc->tree.baseAddress
-                    ? lm.offsetAddr - m_doc->tree.baseAddress
-                    : static_cast<uint64_t>(m_doc->tree.computeOffset(lm.nodeIdx));
+                uint64_t addr = lm.offsetAddr;
                 int sz = node.byteSize();
                 if (sz <= 0 || !prov->isReadable(addr, sz)) continue;
 
@@ -1039,12 +1034,6 @@ void RcxController::applyCommand(const Command& command, bool isUndo) {
             clearHistoryForAdjs(c.offAdjs);
         } else if constexpr (std::is_same_v<T, cmd::ChangeBase>) {
             tree.baseAddress = isUndo ? c.oldBase : c.newBase;
-            qDebug() << "[ChangeBase] tree.baseAddress =" << Qt::hex << tree.baseAddress
-                     << "provider =" << (m_doc->provider ? "yes" : "null");
-            if (m_doc->provider) {
-                m_doc->provider->setBase(tree.baseAddress);
-                qDebug() << "[ChangeBase] provider->base() now =" << Qt::hex << m_doc->provider->base();
-            }
             resetSnapshot();
         } else if constexpr (std::is_same_v<T, cmd::WriteBytes>) {
             const QByteArray& bytes = isUndo ? c.oldBytes : c.newBytes;
@@ -1103,7 +1092,7 @@ void RcxController::setNodeValue(int nodeIdx, int subLine, const QString& text,
     const Node& node = m_doc->tree.nodes[nodeIdx];
     int64_t signedAddr = m_doc->tree.computeOffset(nodeIdx);
     if (signedAddr < 0) return;  // malformed tree: negative offset
-    uint64_t addr = static_cast<uint64_t>(signedAddr);
+    uint64_t addr = m_doc->tree.baseAddress + static_cast<uint64_t>(signedAddr);
 
     // For vector components, redirect to float parsing at sub-offset
     NodeKind editKind = node.kind;
@@ -2072,8 +2061,6 @@ void RcxController::attachViaPlugin(const QString& providerIdentifier, const QSt
     m_doc->dataPath.clear();
     if (m_doc->tree.baseAddress == 0)
         m_doc->tree.baseAddress = newBase;
-    else
-        m_doc->provider->setBase(m_doc->tree.baseAddress);
     resetSnapshot();
     emit m_doc->documentChanged();
     refresh();
@@ -2134,7 +2121,7 @@ void RcxController::setupAutoRefresh() {
 }
 
 // Recursively collect memory ranges for a struct and its pointer targets.
-// memBase is the provider-relative address where this struct's data lives.
+// memBase is the absolute address where this struct's data lives.
 void RcxController::collectPointerRanges(
         uint64_t structId, uint64_t memBase,
         int depth, int maxDepth,
@@ -2167,9 +2154,9 @@ void RcxController::collectPointerRanges(
         uint64_t ptrVal = (child.kind == NodeKind::Pointer32)
             ? (uint64_t)m_snapshotProv->readU32(ptrAddr)
             : m_snapshotProv->readU64(ptrAddr);
-        if (ptrVal == 0 || ptrVal == UINT64_MAX || ptrVal < m_doc->tree.baseAddress) continue;
+        if (ptrVal == 0 || ptrVal == UINT64_MAX) continue;
 
-        uint64_t pBase = ptrVal - m_doc->tree.baseAddress;
+        uint64_t pBase = ptrVal;
         collectPointerRanges(child.refId, pBase, depth + 1, maxDepth,
                              visited, ranges);
     }
@@ -2194,16 +2181,16 @@ void RcxController::onRefreshTick() {
     int extent = computeDataExtent();
     if (extent <= 0) return;
 
-    // Collect all needed ranges: main struct + pointer targets
+    // Collect all needed ranges: main struct + pointer targets (absolute addresses)
     QVector<QPair<uint64_t,int>> ranges;
-    ranges.append({0, extent});
+    ranges.append({m_doc->tree.baseAddress, extent});
 
     if (m_snapshotProv) {
         QSet<QPair<uint64_t,uint64_t>> visited;
         uint64_t rootId = m_viewRootId;
         if (rootId == 0 && !m_doc->tree.nodes.isEmpty())
             rootId = m_doc->tree.nodes[0].id;
-        collectPointerRanges(rootId, 0, 0, 99, visited, ranges);
+        collectPointerRanges(rootId, m_doc->tree.baseAddress, 0, 99, visited, ranges);
     }
 
     m_readInFlight = true;

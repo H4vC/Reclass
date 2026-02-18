@@ -22,7 +22,6 @@ public:
     }
     int size() const override { return m_data.size(); }
     uint64_t base() const override { return m_base; }
-    void setBase(uint64_t b) override { m_base = b; }
     bool isLive() const override { return true; }
     QString name() const override { return QStringLiteral("test"); }
     QString kind() const override { return QStringLiteral("Process"); }
@@ -31,7 +30,7 @@ public:
 // Small tree: one root struct with a few typed fields at known offsets.
 // Keeps tests fast and deterministic (no giant PEB tree).
 static void buildSmallTree(NodeTree& tree) {
-    tree.baseAddress = 0x1000;
+    tree.baseAddress = 0;
 
     Node root;
     root.kind = NodeKind::Struct;
@@ -405,7 +404,8 @@ private slots:
 
     // ── Test: source switch preserves existing base address ──
     void testSourceSwitchPreservesBase() {
-        // Document already has baseAddress = 0x1000 from buildSmallTree()
+        // Set a non-zero baseAddress to simulate a loaded .rcx file
+        m_doc->tree.baseAddress = 0x1000;
         QCOMPARE(m_doc->tree.baseAddress, (uint64_t)0x1000);
 
         // Simulate attaching a new provider whose base differs (e.g. 0x400000)
@@ -414,16 +414,14 @@ private slots:
         QCOMPARE(newBase, (uint64_t)0x400000);
 
         m_doc->provider = prov;
-        // This is the controller logic under test:
+        // Controller logic: keep existing baseAddress when non-zero
         if (m_doc->tree.baseAddress == 0)
             m_doc->tree.baseAddress = newBase;
-        else
-            m_doc->provider->setBase(m_doc->tree.baseAddress);
 
         // baseAddress must stay at the original value
         QCOMPARE(m_doc->tree.baseAddress, (uint64_t)0x1000);
-        // provider base must be synced to match
-        QCOMPARE(m_doc->provider->base(), (uint64_t)0x1000);
+        // provider base is unchanged (no setBase sync) — provider reports its own initial base
+        QCOMPARE(m_doc->provider->base(), (uint64_t)0x400000);
     }
 
     // ── Test: source switch on fresh doc uses provider default ──
@@ -437,12 +435,9 @@ private slots:
         m_doc->provider = prov;
         if (m_doc->tree.baseAddress == 0)
             m_doc->tree.baseAddress = newBase;
-        else
-            m_doc->provider->setBase(m_doc->tree.baseAddress);
 
         // Fresh doc should adopt the provider's default base
         QCOMPARE(m_doc->tree.baseAddress, (uint64_t)0x7FFE0000);
-        QCOMPARE(m_doc->provider->base(), (uint64_t)0x7FFE0000);
     }
 
     // ── Test: toggleCollapse + undo ──

@@ -152,7 +152,7 @@ static BufferProvider makeTestProvider() {
 // Build the full _PEB64 tree (0x7D0 bytes), unions mapped to first member
 static NodeTree makeTestTree() {
     NodeTree tree;
-    tree.baseAddress = 0x000000D87B5E5000ULL;
+    tree.baseAddress = 0;
 
     // Root struct
     Node root;
@@ -340,6 +340,95 @@ static NodeTree makeTestTree() {
     field(0x7C8, NodeKind::UInt64,    "ExtendedFeatureDisableMask");
 
     return tree;
+}
+
+// ── Pointer expansion demo data ──
+// Small tree with a working pointer that points within the buffer.
+// Root struct "Demo" has a UInt32 "id" and Pointer64 "pChild" → ChildData.
+// ChildData has UInt32 "x", UInt32 "y", Float "z".
+struct PtrDemo {
+    NodeTree tree;
+    BufferProvider prov{QByteArray()};
+    uint64_t rootId = 0;
+    uint64_t childStructId = 0;
+};
+
+static PtrDemo makePtrDemo(bool collapsed = false, bool nullPtr = false) {
+    PtrDemo d;
+    d.tree.baseAddress = 0;
+
+    // Root struct
+    Node root;
+    root.kind = NodeKind::Struct;
+    root.structTypeName = "Demo";
+    root.name = "demo";
+    root.parentId = 0;
+    root.offset = 0;
+    int ri = d.tree.addNode(root);
+    d.rootId = d.tree.nodes[ri].id;
+
+    // id field at offset 0
+    {
+        Node n;
+        n.kind = NodeKind::UInt32;
+        n.name = "id";
+        n.parentId = d.rootId;
+        n.offset = 0;
+        d.tree.addNode(n);
+    }
+
+    // ChildData struct definition (separate root)
+    Node child;
+    child.kind = NodeKind::Struct;
+    child.structTypeName = "ChildData";
+    child.name = "ChildData";
+    child.parentId = 0;
+    child.offset = 200; // standalone rendering offset
+    int ci = d.tree.addNode(child);
+    d.childStructId = d.tree.nodes[ci].id;
+
+    {
+        Node n;
+        n.kind = NodeKind::UInt32; n.name = "x";
+        n.parentId = d.childStructId; n.offset = 0;
+        d.tree.addNode(n);
+        n.kind = NodeKind::UInt32; n.name = "y";
+        n.offset = 4;
+        d.tree.addNode(n);
+        n.kind = NodeKind::Float; n.name = "z";
+        n.offset = 8;
+        d.tree.addNode(n);
+    }
+
+    // Pointer at offset 8 → ChildData
+    {
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "pChild";
+        ptr.parentId = d.rootId;
+        ptr.offset = 8;
+        ptr.refId = d.childStructId;
+        ptr.collapsed = collapsed;
+        d.tree.addNode(ptr);
+    }
+
+    // Buffer: 128 bytes
+    QByteArray data(128, '\0');
+    uint32_t idVal = 42;
+    memcpy(data.data() + 0, &idVal, 4);
+
+    if (!nullPtr) {
+        uint64_t ptrVal = 64; // points to offset 64 in buffer
+        memcpy(data.data() + 8, &ptrVal, 8);
+    }
+
+    // Data at the pointer target (offset 64)
+    uint32_t xVal = 100;  memcpy(data.data() + 64, &xVal, 4);
+    uint32_t yVal = 200;  memcpy(data.data() + 68, &yVal, 4);
+    float    zVal = 3.14f; memcpy(data.data() + 72, &zVal, 4);
+
+    d.prov = BufferProvider(data, "ptr_demo");
+    return d;
 }
 
 class TestEditor : public QObject {
@@ -1258,7 +1347,7 @@ private slots:
 
         // Build a small tree: root struct with mixed regular (non-hex) + hex fields
         NodeTree tree;
-        tree.baseAddress = 0x1000;
+        tree.baseAddress = 0;
 
         Node root;
         root.kind = NodeKind::Struct;
@@ -1521,6 +1610,440 @@ private slots:
                  qPrintable(QString("Expected amber text pixels in hovered item, "
                      "found %1 / %2 total (see menu_hover_full.png, menu_hover_item.png)")
                      .arg(amberPixels).arg(totalPixels)));
+    }
+    void testStructPreviewPopupOnCollapsedTypedPointer() {
+        // Build a small tree: root struct with a typed Pointer64 → target struct
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.structTypeName = "TestRoot";
+        root.name = "Root";
+        root.parentId = 0;
+        root.offset = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Target struct with some fields
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.structTypeName = "TargetStruct";
+        target.name = "TargetStruct";
+        target.parentId = 0;
+        target.offset = 0;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        // Add fields to the target struct
+        {
+            Node f; f.parentId = targetId;
+            f.kind = NodeKind::UInt64; f.name = "FieldA"; f.offset = 0;
+            tree.addNode(f);
+            f.kind = NodeKind::UInt64; f.name = "FieldB"; f.offset = 8;
+            tree.addNode(f);
+            f.kind = NodeKind::UInt32; f.name = "FieldC"; f.offset = 16;
+            tree.addNode(f);
+        }
+
+        // Add a Pointer64 node that references the target struct, collapsed
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "pTarget";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = true;
+        tree.addNode(ptr);
+
+        // Provider: 8 bytes at offset 0 holding a pointer value
+        QByteArray data(64, '\0');
+        uint64_t ptrVal = 0x00007FFE12340000ULL;
+        memcpy(data.data(), &ptrVal, 8);
+        BufferProvider prov(data, "test_struct_preview");
+
+        ComposeResult cr = compose(tree, prov);
+        m_editor->applyDocument(cr);
+        m_editor->setProviderRef(&prov, nullptr, &tree);
+        QApplication::processEvents();
+
+        // Find the pointer line (should be a Pointer64 with foldCollapsed=true)
+        int ptrLine = -1;
+        for (int i = 0; i < cr.meta.size(); ++i) {
+            if (cr.meta[i].nodeKind == NodeKind::Pointer64
+                && cr.meta[i].foldCollapsed) {
+                ptrLine = i;
+                break;
+            }
+        }
+        QVERIFY2(ptrLine >= 0, "Could not find collapsed Pointer64 line in compose output");
+
+        // Simulate hover over the value column of the pointer line
+        const LineMeta& lm = cr.meta[ptrLine];
+        QString lineText;
+        {
+            long len = m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_LINELENGTH, (unsigned long)ptrLine);
+            QByteArray buf(len + 1, '\0');
+            m_editor->scintilla()->SendScintilla(
+                QsciScintillaBase::SCI_GETLINE, (uintptr_t)ptrLine, static_cast<const char*>(buf.data()));
+            lineText = QString::fromUtf8(buf.left(len));
+        }
+        ColumnSpan vs = m_editor->valueSpan(lm, lineText.size(),
+                                             lm.effectiveTypeW, lm.effectiveNameW);
+        QVERIFY2(vs.valid, "Value span for pointer line is not valid");
+
+        int hoverCol = (vs.start + vs.end) / 2;  // middle of value span
+        QPoint vp = colToViewport(m_editor->scintilla(), ptrLine, hoverCol);
+        sendMouseMove(m_editor->scintilla()->viewport(), vp);
+        QApplication::processEvents();
+
+        // Verify struct preview popup is shown
+        QVERIFY2(m_editor->structPreviewPopup() != nullptr,
+                 "Struct preview popup was not created");
+        QVERIFY2(m_editor->structPreviewPopup()->isVisible(),
+                 "Struct preview popup is not visible");
+
+        // Restore original document for other tests
+        m_editor->setProviderRef(nullptr, nullptr, nullptr);
+        m_editor->applyDocument(m_result);
+    }
+
+    void testStructPreviewPopupNotShownWhenExpanded() {
+        // Same tree but pointer is NOT collapsed — popup should not show
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.structTypeName = "TestRoot";
+        root.name = "Root";
+        root.parentId = 0;
+        root.offset = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node target;
+        target.kind = NodeKind::Struct;
+        target.structTypeName = "TargetStruct";
+        target.name = "TargetStruct";
+        target.parentId = 0;
+        target.offset = 0;
+        int ti = tree.addNode(target);
+        uint64_t targetId = tree.nodes[ti].id;
+
+        {
+            Node f; f.parentId = targetId;
+            f.kind = NodeKind::UInt64; f.name = "FieldA"; f.offset = 0;
+            tree.addNode(f);
+            f.kind = NodeKind::UInt64; f.name = "FieldB"; f.offset = 8;
+            tree.addNode(f);
+        }
+
+        Node ptr;
+        ptr.kind = NodeKind::Pointer64;
+        ptr.name = "pTarget";
+        ptr.parentId = rootId;
+        ptr.offset = 0;
+        ptr.refId = targetId;
+        ptr.collapsed = false;  // expanded
+        tree.addNode(ptr);
+
+        QByteArray data(64, '\0');
+        uint64_t ptrVal = 0x00007FFE12340000ULL;
+        memcpy(data.data(), &ptrVal, 8);
+        BufferProvider prov(data, "test_struct_preview_expanded");
+
+        ComposeResult cr = compose(tree, prov);
+        m_editor->applyDocument(cr);
+        m_editor->setProviderRef(&prov, nullptr, &tree);
+        QApplication::processEvents();
+
+        // Find the pointer line (should be Pointer64 and NOT collapsed)
+        int ptrLine = -1;
+        for (int i = 0; i < cr.meta.size(); ++i) {
+            if (cr.meta[i].nodeKind == NodeKind::Pointer64) {
+                ptrLine = i;
+                break;
+            }
+        }
+        QVERIFY2(ptrLine >= 0, "Could not find Pointer64 line in compose output");
+
+        // Hover at a middle column on the pointer line — expanded pointer header
+        // may not have a standard value span, but we just need to verify no popup
+        int hoverCol = 40;  // somewhere in the middle of the line
+        QPoint vp = colToViewport(m_editor->scintilla(), ptrLine, hoverCol);
+        sendMouseMove(m_editor->scintilla()->viewport(), vp);
+        QApplication::processEvents();
+
+        // Struct preview popup should NOT be visible (pointer is expanded)
+        bool popupVisible = m_editor->structPreviewPopup()
+                            && m_editor->structPreviewPopup()->isVisible();
+        QVERIFY2(!popupVisible,
+                 "Struct preview popup should not appear for expanded pointer");
+
+        // Restore
+        m_editor->setProviderRef(nullptr, nullptr, nullptr);
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: expanded pointer renders child fields from buffer ──
+    void testPointerExpansionRendersChildren() {
+        PtrDemo d = makePtrDemo(/*collapsed=*/false);
+        ComposeResult cr = compose(d.tree, d.prov);
+        m_editor->applyDocument(cr);
+        QApplication::processEvents();
+
+        // Find the pointer header line
+        int ptrHeaderLine = -1;
+        for (int i = 0; i < cr.meta.size(); ++i) {
+            if (cr.meta[i].nodeKind == NodeKind::Pointer64
+                && cr.meta[i].foldHead && !cr.meta[i].foldCollapsed) {
+                ptrHeaderLine = i;
+                break;
+            }
+        }
+        QVERIFY2(ptrHeaderLine >= 0, "Should have an expanded Pointer64 header");
+        QCOMPARE(cr.meta[ptrHeaderLine].lineKind, LineKind::Header);
+
+        // Find expanded child fields (x, y, z at depth = header depth + 1)
+        int headerDepth = cr.meta[ptrHeaderLine].depth;
+        int childFieldCount = 0;
+        for (int i = ptrHeaderLine + 1; i < cr.meta.size(); ++i) {
+            const LineMeta& lm = cr.meta[i];
+            if (lm.depth == headerDepth + 1 && lm.lineKind == LineKind::Field)
+                childFieldCount++;
+            if (lm.lineKind == LineKind::Footer && lm.nodeKind == NodeKind::Pointer64)
+                break; // reached pointer footer
+        }
+        QCOMPARE(childFieldCount, 3); // x, y, z
+
+        // Find the pointer footer line
+        int ptrFooterLine = -1;
+        for (int i = ptrHeaderLine + 1; i < cr.meta.size(); ++i) {
+            if (cr.meta[i].lineKind == LineKind::Footer
+                && cr.meta[i].nodeKind == NodeKind::Pointer64) {
+                ptrFooterLine = i;
+                break;
+            }
+        }
+        QVERIFY2(ptrFooterLine > ptrHeaderLine, "Should have a pointer footer after header");
+
+        // Verify the composed text contains the child field values
+        // UInt32 displays as hex (e.g. 100 → "0x00000064"), Float as decimal
+        QStringList lines = cr.text.split('\n');
+        bool foundX = false, foundY = false, foundZ = false;
+        for (const QString& line : lines) {
+            if (line.contains("0x64") && line.contains("x")) foundX = true;  // 100 = 0x64
+            if (line.contains("0xc8") && line.contains("y")) foundY = true;  // 200 = 0xc8
+            if (line.contains("3.14") && line.contains("z")) foundZ = true;
+        }
+        QVERIFY2(foundX, "Child field 'x' with value 0x64 should appear in output");
+        QVERIFY2(foundY, "Child field 'y' with value 0xc8 should appear in output");
+        QVERIFY2(foundZ, "Child field 'z' with value 3.14 should appear in output");
+
+        // Verify the pointer type name appears
+        QVERIFY2(cr.text.contains("ChildData*"),
+                 "Pointer type 'ChildData*' should appear in output");
+
+        // Editor should have rendered all lines
+        int editorLineCount = m_editor->scintilla()->lines();
+        QVERIFY2(editorLineCount >= cr.meta.size(),
+                 qPrintable(QString("Editor has %1 lines but compose has %2 meta entries")
+                     .arg(editorLineCount).arg(cr.meta.size())));
+
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: collapsed pointer hides child fields ──
+    void testPointerCollapsedHidesChildren() {
+        PtrDemo expanded = makePtrDemo(/*collapsed=*/false);
+        ComposeResult crExpanded = compose(expanded.tree, expanded.prov);
+
+        PtrDemo collapsed = makePtrDemo(/*collapsed=*/true);
+        ComposeResult crCollapsed = compose(collapsed.tree, collapsed.prov);
+
+        // Collapsed should have fewer lines (no child fields, no pointer footer)
+        QVERIFY2(crCollapsed.meta.size() < crExpanded.meta.size(),
+                 qPrintable(QString("Collapsed (%1 lines) should be smaller than expanded (%2)")
+                     .arg(crCollapsed.meta.size()).arg(crExpanded.meta.size())));
+
+        // The pointer line should be a Field (not Header) with foldCollapsed=true
+        bool foundCollapsedPtr = false;
+        for (const LineMeta& lm : crCollapsed.meta) {
+            if (lm.nodeKind == NodeKind::Pointer64 && lm.foldHead) {
+                QVERIFY(lm.foldCollapsed);
+                QCOMPARE(lm.lineKind, LineKind::Field);
+                foundCollapsedPtr = true;
+                break;
+            }
+        }
+        QVERIFY2(foundCollapsedPtr, "Should have a collapsed Pointer64 fold head");
+
+        // No child fields from ChildData should appear in the main struct section
+        bool foundChildField = false;
+        for (const LineMeta& lm : crCollapsed.meta) {
+            if (lm.lineKind == LineKind::Footer && lm.nodeKind == NodeKind::Pointer64) {
+                foundChildField = true; // pointer footer exists = children visible
+                break;
+            }
+        }
+        QVERIFY2(!foundChildField,
+                 "Collapsed pointer should not have a pointer footer (no children)");
+
+        // Apply collapsed to editor
+        m_editor->applyDocument(crCollapsed);
+        QApplication::processEvents();
+
+        int collapsedLines = m_editor->scintilla()->lines();
+        m_editor->applyDocument(crExpanded);
+        QApplication::processEvents();
+        int expandedLines = m_editor->scintilla()->lines();
+
+        QVERIFY2(collapsedLines < expandedLines,
+                 qPrintable(QString("Collapsed (%1 editor lines) should be fewer than expanded (%2)")
+                     .arg(collapsedLines).arg(expandedLines)));
+
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: null pointer still shows template fields (via NullProvider) ──
+    void testPointerNullShowsTemplate() {
+        PtrDemo d = makePtrDemo(/*collapsed=*/false, /*nullPtr=*/true);
+        ComposeResult cr = compose(d.tree, d.prov);
+        m_editor->applyDocument(cr);
+        QApplication::processEvents();
+
+        // Even with null pointer, expanded pointer should show template children
+        int ptrHeaderLine = -1;
+        for (int i = 0; i < cr.meta.size(); ++i) {
+            if (cr.meta[i].nodeKind == NodeKind::Pointer64
+                && cr.meta[i].foldHead && !cr.meta[i].foldCollapsed) {
+                ptrHeaderLine = i;
+                break;
+            }
+        }
+        QVERIFY2(ptrHeaderLine >= 0,
+                 "Null pointer should still produce an expanded header");
+
+        // Should have child field lines (template from NullProvider shows zeros)
+        int headerDepth = cr.meta[ptrHeaderLine].depth;
+        int childFieldCount = 0;
+        for (int i = ptrHeaderLine + 1; i < cr.meta.size(); ++i) {
+            const LineMeta& lm = cr.meta[i];
+            if (lm.depth == headerDepth + 1 && lm.lineKind == LineKind::Field)
+                childFieldCount++;
+            if (lm.lineKind == LineKind::Footer && lm.nodeKind == NodeKind::Pointer64)
+                break;
+        }
+        QCOMPARE(childFieldCount, 3); // x, y, z template still rendered
+
+        // Verify ChildData* appears in output
+        QVERIFY2(cr.text.contains("ChildData*"),
+                 "Null pointer should still show 'ChildData*' type");
+
+        m_editor->applyDocument(m_result);
+    }
+
+    // ── Test: nested pointer chain renders multiple expansion levels ──
+    void testPointerChainExpansion() {
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        // Root struct
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.structTypeName = "Chain";
+        root.name = "chain";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Inner struct (innermost target)
+        Node inner;
+        inner.kind = NodeKind::Struct;
+        inner.structTypeName = "Inner";
+        inner.name = "Inner";
+        inner.parentId = 0;
+        inner.offset = 300;
+        int ii = tree.addNode(inner);
+        uint64_t innerId = tree.nodes[ii].id;
+        {
+            Node f;
+            f.kind = NodeKind::UInt32; f.name = "value";
+            f.parentId = innerId; f.offset = 0;
+            tree.addNode(f);
+        }
+
+        // Outer struct (contains pointer to Inner)
+        Node outer;
+        outer.kind = NodeKind::Struct;
+        outer.structTypeName = "Outer";
+        outer.name = "Outer";
+        outer.parentId = 0;
+        outer.offset = 200;
+        int oi = tree.addNode(outer);
+        uint64_t outerId = tree.nodes[oi].id;
+        {
+            Node f;
+            f.kind = NodeKind::UInt32; f.name = "tag";
+            f.parentId = outerId; f.offset = 0;
+            tree.addNode(f);
+
+            Node p;
+            p.kind = NodeKind::Pointer64; p.name = "pInner";
+            p.parentId = outerId; p.offset = 8;
+            p.refId = innerId;
+            tree.addNode(p);
+        }
+
+        // Root pointer to Outer
+        {
+            Node p;
+            p.kind = NodeKind::Pointer64; p.name = "pOuter";
+            p.parentId = rootId; p.offset = 0;
+            p.refId = outerId;
+            tree.addNode(p);
+        }
+
+        // Buffer: pOuter at 0 → 32, pInner at 32+8=40 → 64, value at 64 = 999
+        QByteArray data(128, '\0');
+        uint64_t pOuter = 32;  memcpy(data.data() + 0,  &pOuter, 8);
+        uint64_t pInner = 64;  memcpy(data.data() + 40, &pInner, 8);
+        uint32_t tag = 0xAB;   memcpy(data.data() + 32, &tag, 4);
+        uint32_t val = 999;    memcpy(data.data() + 64, &val, 4);
+        BufferProvider prov(data, "chain_demo");
+
+        ComposeResult cr = compose(tree, prov);
+        m_editor->applyDocument(cr);
+        QApplication::processEvents();
+
+        // Both Outer* and Inner* should appear
+        QVERIFY2(cr.text.contains("Outer*"), "Should display 'Outer*' pointer type");
+        QVERIFY2(cr.text.contains("Inner*"), "Should display 'Inner*' pointer type");
+
+        // Count pointer fold heads — should have at least 2 (pOuter + pInner)
+        int ptrFoldHeads = 0;
+        int maxDepth = 0;
+        for (const LineMeta& lm : cr.meta) {
+            if (lm.foldHead && lm.nodeKind == NodeKind::Pointer64)
+                ptrFoldHeads++;
+            if (lm.depth > maxDepth) maxDepth = lm.depth;
+        }
+        QVERIFY2(ptrFoldHeads >= 2,
+                 qPrintable(QString("Expected >=2 pointer fold heads, got %1")
+                     .arg(ptrFoldHeads)));
+
+        // Depth should reach at least 3 (root=0, pOuter children=1..2, pInner children=2..3)
+        QVERIFY2(maxDepth >= 3,
+                 qPrintable(QString("Expected max depth >= 3 for chain, got %1")
+                     .arg(maxDepth)));
+
+        // Verify innermost value (999 = 0x3e7) appears in the output
+        QVERIFY2(cr.text.contains("0x3e7"),
+                 "Innermost field 'value = 0x3e7' should appear in chain expansion");
+
+        m_editor->applyDocument(m_result);
     }
 };
 

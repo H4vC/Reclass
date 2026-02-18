@@ -21,7 +21,7 @@ Q_DECLARE_METATYPE(rcx::TypeEntry)
 using namespace rcx;
 
 static void buildTwoRootTree(NodeTree& tree) {
-    tree.baseAddress = 0x1000;
+    tree.baseAddress = 0;
 
     Node a;
     a.kind = NodeKind::Struct;

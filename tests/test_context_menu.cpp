@@ -8,7 +8,7 @@
 using namespace rcx;
 
 static void buildTree(NodeTree& tree) {
-    tree.baseAddress = 0x1000;
+    tree.baseAddress = 0;
 
     Node root;
     root.kind = NodeKind::Struct;

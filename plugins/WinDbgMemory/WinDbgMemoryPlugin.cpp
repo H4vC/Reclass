@@ -304,7 +304,7 @@ bool WinDbgMemoryProvider::read(uint64_t addr, void* buf, int len) const
     bool result = false;
     dispatchToOwner([&]() {
         ULONG bytesRead = 0;
-        HRESULT hr = m_dataSpaces->ReadVirtual(m_base + addr, buf, (ULONG)len, &bytesRead);
+        HRESULT hr = m_dataSpaces->ReadVirtual(addr, buf, (ULONG)len, &bytesRead);
         if (FAILED(hr) || (int)bytesRead < len)
             memset((char*)buf + bytesRead, 0, len - bytesRead);
         result = bytesRead > 0;
@@ -324,7 +324,7 @@ bool WinDbgMemoryProvider::write(uint64_t addr, const void* buf, int len)
     bool result = false;
     dispatchToOwner([&]() {
         ULONG bytesWritten = 0;
-        HRESULT hr = m_dataSpaces->WriteVirtual(m_base + addr, const_cast<void*>(buf),
+        HRESULT hr = m_dataSpaces->WriteVirtual(addr, const_cast<void*>(buf),
                                                  (ULONG)len, &bytesWritten);
         result = SUCCEEDED(hr) && bytesWritten == (ULONG)len;
     });
@@ -364,7 +364,7 @@ QString WinDbgMemoryProvider::getSymbol(uint64_t addr) const
         char nameBuf[512] = {};
         ULONG nameSize = 0;
         ULONG64 displacement = 0;
-        HRESULT hr = m_symbols->GetNameByOffset(m_base + addr, nameBuf, sizeof(nameBuf),
+        HRESULT hr = m_symbols->GetNameByOffset(addr, nameBuf, sizeof(nameBuf),
                                                  &nameSize, &displacement);
         if (SUCCEEDED(hr) && nameSize > 0) {
             result = QString::fromUtf8(nameBuf);

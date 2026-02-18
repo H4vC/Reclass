@@ -33,10 +33,10 @@ public:
     // Examples: "File", "Process", "Socket"
     virtual QString kind() const { return QStringLiteral("File"); }
 
-    // Base address for providers that offset reads (e.g. process memory).
+    // Initial base address discovered by the provider (e.g. main module base).
+    // Used by the controller to set tree.baseAddress on first attach.
     // For file/buffer providers this is always 0.
     virtual uint64_t base() const { return 0; }
-    virtual void setBase(uint64_t newBase) { Q_UNUSED(newBase); }
 
     // Resolve an absolute address to a symbol name.
     // Returns empty string if no symbol is known.

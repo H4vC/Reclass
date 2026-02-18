@@ -33,9 +33,8 @@ bool RcNetCompatProvider::read(uint64_t addr, void* buf, int len) const
     if (!m_handle || !m_fns.ReadRemoteMemory || len <= 0)
         return false;
 
-    uint64_t absAddr = m_base + addr;
     return m_fns.ReadRemoteMemory(m_handle,
-                                  reinterpret_cast<RC_Pointer>(absAddr),
+                                  reinterpret_cast<RC_Pointer>(addr),
                                   static_cast<RC_Pointer>(buf),
                                   0, len);
 }
@@ -54,9 +53,8 @@ bool RcNetCompatProvider::write(uint64_t addr, const void* buf, int len)
     if (!m_handle || !m_fns.WriteRemoteMemory || len <= 0)
         return false;
 
-    uint64_t absAddr = m_base + addr;
     return m_fns.WriteRemoteMemory(m_handle,
-                                   reinterpret_cast<RC_Pointer>(absAddr),
+                                   reinterpret_cast<RC_Pointer>(addr),
                                    const_cast<RC_Pointer>(static_cast<const void*>(buf)),
                                    0, len);
 }
