@@ -12,6 +12,8 @@
 #include <QTreeView>
 #include <QStandardItemModel>
 #include <QMap>
+#include <QButtonGroup>
+#include <QPushButton>
 #include <Qsci/qsciscintilla.h>
 
 namespace rcx {
@@ -67,6 +69,9 @@ private:
 
     QMdiArea*       m_mdiArea;
     QLabel*         m_statusLabel;
+    QButtonGroup*   m_viewBtnGroup = nullptr;
+    QPushButton*    m_btnReclass   = nullptr;
+    QPushButton*    m_btnRendered  = nullptr;
     TitleBarWidget* m_titleBar = nullptr;
     QWidget*        m_borderOverlay = nullptr;
     PluginManager   m_pluginManager;
@@ -114,8 +119,8 @@ private:
 
     SplitPane createSplitPane(TabState& tab);
     void applyTheme(const Theme& theme);
-    void applyTabWidgetStyle(QTabWidget* tw);
     void styleTabCloseButtons();
+    void syncViewButtons(ViewMode mode);
     SplitPane* findPaneByTabWidget(QTabWidget* tw);
     SplitPane* findActiveSplitPane();
     RcxEditor* activePaneEditor();

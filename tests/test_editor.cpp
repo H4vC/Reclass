@@ -14,6 +14,12 @@
 #include <QScreen>
 #include <QMainWindow>
 #include <QStatusBar>
+#include <QPushButton>
+#include <QButtonGroup>
+#include <QLabel>
+#include <QLayout>
+#include <QHBoxLayout>
+#include <QScrollBar>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qsciscintillabase.h>
 #include "editor.h"
@@ -2048,11 +2054,353 @@ private slots:
         m_editor->applyDocument(m_result);
     }
 
+    // ── Test: status bar view toggle buttons (pixel-level) ──
+    void testStatusBarViewToggleButtons() {
+        // Mirror the production ViewTabButton from main.cpp
+        static constexpr int kAccentH = 2;
+        static constexpr int kPadLR  = 12;
+        static constexpr int kPadBot = 4;
+        class VTB : public QPushButton {
+        public:
+            QColor colBg, colBgChecked, colBgHover, colBgPressed;
+            QColor colText, colTextMuted, colAccent;
+            explicit VTB(const QString& t, QWidget* p = nullptr) : QPushButton(t, p) {
+                setCheckable(true); setFlat(true); setContentsMargins(0,0,0,0);
+                setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
+            }
+            QSize sizeHint() const override {
+                QFontMetrics fm(font());
+                return QSize(fm.horizontalAdvance(text()) + 2*kPadLR,
+                             fm.height() + kAccentH + kPadBot);
+            }
+        protected:
+            void paintEvent(QPaintEvent*) override {
+                QPainter p(this);
+                QColor bg = colBg;
+                if (isDown())          bg = colBgPressed;
+                else if (underMouse()) bg = colBgHover;
+                else if (isChecked())  bg = colBgChecked;
+                p.fillRect(rect(), bg);
+                if (isChecked())
+                    p.fillRect(0, 0, width(), kAccentH, colAccent);
+                p.setPen(isChecked() || underMouse() || isDown() ? colText : colTextMuted);
+                p.setFont(font());
+                QRect tr(kPadLR, kAccentH, width()-2*kPadLR, height()-kAccentH);
+                p.drawText(tr, Qt::AlignVCenter|Qt::AlignLeft, text());
+            }
+            void enterEvent(QEnterEvent*) override { update(); }
+            void leaveEvent(QEvent*) override { update(); }
+        };
+
+        QColor bg(30,30,30), bgAlt(45,45,48), hover(62,62,66);
+        QColor text(212,212,212), textMuted(128,128,128);
+        QColor accent("#b180d7");
+        QColor pressed = hover.darker(130);
+
+        auto setColors = [&](VTB* b) {
+            b->colBg = bg; b->colBgChecked = bgAlt; b->colBgHover = hover;
+            b->colBgPressed = pressed; b->colText = text;
+            b->colTextMuted = textMuted; b->colAccent = accent;
+        };
+
+        // Borderless status bar with manual layout (mirrors production FlatStatusBar)
+        class FSB : public QStatusBar {
+        public:
+            QWidget* tabRow = nullptr;
+            QLabel*  label  = nullptr;
+            FSB() { setSizeGripEnabled(false); }
+        protected:
+            void paintEvent(QPaintEvent*) override {
+                QPainter p(this); p.fillRect(rect(), palette().window());
+            }
+            void resizeEvent(QResizeEvent* e) override {
+                QStatusBar::resizeEvent(e);
+                doLayout();
+            }
+            void showEvent(QShowEvent* e) override {
+                QStatusBar::showEvent(e);
+                doLayout();
+            }
+        private:
+            void doLayout() {
+                if (!tabRow || !label) return;
+                int h = height(), tw = tabRow->sizeHint().width();
+                tabRow->setGeometry(0, 0, tw, h);
+                label->setGeometry(tw, 0, width() - tw, h);
+            }
+        };
+
+        QMainWindow win;
+        win.resize(600, 400);
+        QPalette pal; pal.setColor(QPalette::Window, bg);
+        win.setPalette(pal);
+        auto* sb = new FSB;
+        win.setStatusBar(sb);
+        sb->setPalette(pal);
+        sb->setAutoFillBackground(true);
+        if (win.layout()) {
+            win.layout()->setSpacing(0);
+            win.layout()->setContentsMargins(0,0,0,0);
+        }
+
+        auto* btnGroup = new QButtonGroup(&win);
+        btnGroup->setExclusive(true);
+        auto* btnR = new VTB("Reclass");
+        auto* btnC = new VTB("C/C++");
+        setColors(btnR); setColors(btnC);
+        btnR->setChecked(true);
+        btnGroup->addButton(btnR, 0);
+        btnGroup->addButton(btnC, 1);
+        auto* tabRow = new QWidget(sb);
+        auto* tabLay = new QHBoxLayout(tabRow);
+        tabLay->setContentsMargins(0,0,0,0);
+        tabLay->setSpacing(0);
+        tabLay->addWidget(btnR);
+        tabLay->addWidget(btnC);
+        auto* lbl = new QLabel("Ready", sb);
+        lbl->setContentsMargins(10,0,0,0);
+        sb->tabRow = tabRow;
+        sb->label  = lbl;
+
+        win.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&win));
+        QTest::qWait(100);
+
+        // ── Toggle logic ──
+        QVERIFY(btnR->isChecked());
+        QVERIFY(!btnC->isChecked());
+        QTest::mouseClick(btnC, Qt::LeftButton);
+        QVERIFY(btnC->isChecked());
+        QVERIFY(!btnR->isChecked());
+        QTest::mouseClick(btnR, Qt::LeftButton);
+        QVERIFY(btnR->isChecked());
+        QTest::qWait(50);
+
+        // ── Pixel: accent line on checked button at rows 0..(kAccentH-1) ──
+        QImage imgR = btnR->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        QVERIFY(imgR.height() >= kAccentH + 4);
+
+        // Every pixel in the top kAccentH rows (middle 80% width) must be accent
+        int x0 = imgR.width() / 10, x1 = imgR.width() * 9 / 10;
+        for (int y = 0; y < kAccentH; y++) {
+            for (int x = x0; x < x1; x++) {
+                QColor c(imgR.pixel(x, y));
+                QVERIFY2(qAbs(c.red() - accent.red()) < 10
+                      && qAbs(c.green() - accent.green()) < 10
+                      && qAbs(c.blue() - accent.blue()) < 10,
+                    qPrintable(QString("Checked btn pixel(%1,%2)=%3 expected accent %4")
+                        .arg(x).arg(y).arg(c.name(), accent.name())));
+            }
+        }
+
+        // Mid-height row must NOT be accent (accent doesn't bleed into body)
+        {
+            int midY = imgR.height() / 2;
+            QColor c(imgR.pixel(imgR.width()/2, midY));
+            QVERIFY2(qAbs(c.red() - accent.red()) > 15
+                  || qAbs(c.green() - accent.green()) > 15
+                  || qAbs(c.blue() - accent.blue()) > 15,
+                qPrintable(QString("Row %1 should be background, not accent: %2")
+                    .arg(midY).arg(c.name())));
+        }
+
+        // ── Pixel: unchecked button has NO accent line ──
+        QImage imgC = btnC->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < kAccentH; y++) {
+            QColor c(imgC.pixel(imgC.width()/2, y));
+            QVERIFY2(qAbs(c.red() - accent.red()) > 15
+                  || qAbs(c.green() - accent.green()) > 15
+                  || qAbs(c.blue() - accent.blue()) > 15,
+                qPrintable(QString("Unchecked btn row %1 has accent: %2")
+                    .arg(y).arg(c.name())));
+        }
+
+        // ── Pixel: zero gap between the two buttons ──
+        // Map to their shared parent (the tabRow container)
+        QWidget* container = btnR->parentWidget();
+        int rRight = btnR->mapTo(container, QPoint(btnR->width(), 0)).x();
+        int cLeft  = btnC->mapTo(container, QPoint(0, 0)).x();
+        QVERIFY2(rRight == cLeft,
+            qPrintable(QString("Gap between buttons: btnR right=%1 btnC left=%2 gap=%3")
+                .arg(rRight).arg(cLeft).arg(cLeft - rRight)));
+
+        // ── Pressed color is darker than hover ──
+        QVERIFY2(pressed.lightness() < hover.lightness(),
+            qPrintable(QString("Pressed %1 should be darker than hover %2")
+                .arg(pressed.name(), hover.name())));
+
+        // ── Button starts at x=0 in status bar (no left padding) ──
+        QPoint btnTopLeft = tabRow->mapTo(sb, QPoint(0, 0));
+        QVERIFY2(btnTopLeft.x() == 0,
+            qPrintable(QString("Tab row left margin: x=%1, expected 0").arg(btnTopLeft.x())));
+
+        // ── Button starts at y=0 in status bar (no top padding) ──
+        QVERIFY2(btnTopLeft.y() == 0,
+            qPrintable(QString("Tab row top margin: y=%1, expected 0").arg(btnTopLeft.y())));
+
+        // ── Button takes full status bar height ──
+        QVERIFY2(btnR->height() == sb->height(),
+            qPrintable(QString("Button height=%1 sb height=%2")
+                .arg(btnR->height()).arg(sb->height())));
+
+        // ── Accent at y=0 in status bar pixel coordinates (grab status bar) ──
+        QImage sbImg = sb->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        {
+            QColor c(sbImg.pixel(btnR->width()/2, 0));
+            QVERIFY2(qAbs(c.red() - accent.red()) < 10
+                  && qAbs(c.green() - accent.green()) < 10
+                  && qAbs(c.blue() - accent.blue()) < 10,
+                qPrintable(QString("Status bar pixel(x,%1,0)=%2 expected accent %3")
+                    .arg(btnR->width()/2).arg(c.name(), accent.name())));
+        }
+
+        qDebug() << QString("ViewTabButton: accent=%1 btnH=%2 sbH=%3 gap=%4 leftX=%5 topY=%6")
+            .arg(accent.name()).arg(btnR->height()).arg(sb->height())
+            .arg(cLeft - rRight).arg(btnTopLeft.x()).arg(btnTopLeft.y());
+    }
+
     // ── Test: resize grip dots are equidistant from right and bottom window edges ──
     // The grip is a direct child of the window positioned via move(), not inside
     // the status bar layout. This test verifies the dot placement is symmetric
     // regardless of font, and runs the check at two different font sizes to prove
     // font independence.
+    // ── Test: horizontal scrollbar after long name rename ──
+    void testHScrollResetAfterNameShrink() {
+        // Use a dedicated narrow editor so content easily overflows the viewport
+        auto* editor = new RcxEditor();
+        editor->resize(200, 300);
+        editor->show();
+        QVERIFY(QTest::qWaitForWindowExposed(editor));
+        auto* sci = editor->scintilla();
+        auto* hbar = sci->horizontalScrollBar();
+
+        auto makeTree = [](const QString& fieldName) {
+            NodeTree tree;
+            tree.baseAddress = 0;
+            Node root;
+            root.kind = NodeKind::Struct;
+            root.structTypeName = "MyStruct";
+            root.name = "s";
+            root.parentId = 0;
+            root.offset = 0;
+            int ri = tree.addNode(root);
+            uint64_t rootId = tree.nodes[ri].id;
+
+            Node f;
+            f.kind = NodeKind::Int32;
+            f.name = fieldName;
+            f.parentId = rootId;
+            f.offset = 0;
+            tree.addNode(f);
+            return tree;
+        };
+
+        BufferProvider prov(QByteArray(64, '\0'));
+
+        // ── Step 1: long name → wide content, scrollbar must appear ──
+        QString longName = QString(120, QChar('W'));
+        {
+            NodeTree tree = makeTree(longName);
+            ComposeResult cr = compose(tree, prov);
+            editor->applyDocument(cr);
+            QApplication::processEvents();
+            QTest::qWait(50);
+        }
+
+        int scrollW1 = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH);
+        int viewW    = sci->viewport()->width();
+
+        qDebug() << QString("Long name: scrollW=%1 vpW=%2 hbar.visible=%3 "
+                            "hbar.max=%4 hbar.value=%5")
+                        .arg(scrollW1).arg(viewW)
+                        .arg(hbar->isVisible())
+                        .arg(hbar->maximum()).arg(hbar->value());
+
+        QVERIFY2(scrollW1 > viewW,
+                 qPrintable(QString("scrollW=%1 should exceed vpW=%2")
+                     .arg(scrollW1).arg(viewW)));
+
+        // Scrollbar must be visible when content overflows
+        QVERIFY2(hbar->isVisible(),
+                 "Horizontal scrollbar should be visible when content overflows");
+        QVERIFY2(hbar->maximum() > 0,
+                 qPrintable(QString("Scrollbar max should be >0, got %1")
+                     .arg(hbar->maximum())));
+
+        // Simulate user scrolled right
+        sci->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET, (unsigned long)(scrollW1 / 2));
+        QApplication::processEvents();
+        QTest::qWait(20);
+        int xOff1 = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETXOFFSET);
+        QVERIFY2(xOff1 > 0, "X offset should be non-zero after scrolling right");
+
+        // ── Step 2: short name → narrower content ──
+        {
+            NodeTree tree = makeTree("x");
+            ComposeResult cr = compose(tree, prov);
+            editor->applyDocument(cr);
+            QApplication::processEvents();
+            QTest::qWait(50);
+        }
+
+        int scrollW2 = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH);
+        int xOff2    = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETXOFFSET);
+
+        qDebug() << QString("Short name: scrollW=%1 xOff=%2 vpW=%3 hbar.visible=%4 "
+                            "hbar.max=%5 hbar.value=%6")
+                        .arg(scrollW2).arg(xOff2).arg(viewW)
+                        .arg(hbar->isVisible())
+                        .arg(hbar->maximum()).arg(hbar->value());
+
+        // Scroll width should have shrunk
+        QVERIFY2(scrollW2 < scrollW1,
+                 qPrintable(QString("scrollW should shrink: was %1, now %2")
+                     .arg(scrollW1).arg(scrollW2)));
+
+        // X offset must be clamped to max(0, scrollW - viewportW)
+        int maxValidXOff = qMax(0, scrollW2 - viewW);
+        QVERIFY2(xOff2 <= maxValidXOff,
+                 qPrintable(QString("xOffset=%1 exceeds max valid=%2 (scrollW=%3 vpW=%4)")
+                     .arg(xOff2).arg(maxValidXOff).arg(scrollW2).arg(viewW)));
+
+        // If content fits viewport entirely, offset must be 0
+        if (scrollW2 <= viewW) {
+            QCOMPARE(xOff2, 0);
+        }
+
+        // If content still overflows, scrollbar must still be visible
+        if (scrollW2 > viewW) {
+            QVERIFY2(hbar->isVisible(),
+                     "Scrollbar should remain visible when content still overflows");
+        }
+
+        // ── Step 3: apply long name again → scrollbar must reappear ──
+        {
+            NodeTree tree = makeTree(longName);
+            ComposeResult cr = compose(tree, prov);
+            editor->applyDocument(cr);
+            QApplication::processEvents();
+            QTest::qWait(50);
+        }
+
+        int scrollW3 = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH);
+        int xOff3    = (int)sci->SendScintilla(QsciScintillaBase::SCI_GETXOFFSET);
+
+        qDebug() << QString("Long again: scrollW=%1 xOff=%2 hbar.visible=%3 hbar.max=%4")
+                        .arg(scrollW3).arg(xOff3)
+                        .arg(hbar->isVisible()).arg(hbar->maximum());
+
+        QVERIFY2(scrollW3 > viewW,
+                 qPrintable(QString("scrollW=%1 should exceed vpW=%2 after re-widen")
+                     .arg(scrollW3).arg(viewW)));
+        QVERIFY2(hbar->isVisible(),
+                 "Scrollbar must reappear after content widens again");
+        // After fresh apply with no prior scroll, xOffset should be 0
+        QCOMPARE(xOff3, 0);
+
+        delete editor;
+    }
+
     void testResizeGripCornerSymmetry() {
         // Same constants as production ResizeGrip in main.cpp
         static constexpr int kSize = 16;

@@ -808,6 +808,10 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
         int pixelWidth = fm.horizontalAdvance(QString(maxLen, QChar('0')));
         m_sci->SendScintilla(QsciScintillaBase::SCI_SETSCROLLWIDTH,
                              (unsigned long)qMax(1, pixelWidth));
+
+        // Reset horizontal scroll to 0.  The controller's restoreViewState()
+        // will set it back to the (clamped) saved position afterward.
+        m_sci->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET, (unsigned long)0);
     }
 
     // Force full re-lex to fix stale syntax coloring after edits
@@ -1130,8 +1134,13 @@ void RcxEditor::restoreViewState(const ViewState& vs) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_GOTOPOS, (unsigned long)pos);
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETFIRSTVISIBLELINE,
                          (unsigned long)vs.scrollLine);
-    m_sci->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET,
-                         (unsigned long)vs.xOffset);
+    // Clamp xOffset so it doesn't exceed the current content width.
+    // After a rename that shrinks content, the saved offset may be stale.
+    int scrollW = (int)m_sci->SendScintilla(QsciScintillaBase::SCI_GETSCROLLWIDTH);
+    int vpW = m_sci->viewport() ? m_sci->viewport()->width() : 0;
+    int maxXOff = qMax(0, scrollW - vpW);
+    int xOff = qBound(0, vs.xOffset, maxXOff);
+    m_sci->SendScintilla(QsciScintillaBase::SCI_SETXOFFSET, (unsigned long)xOff);
 }
 
 const LineMeta* RcxEditor::metaForLine(int line) const {
