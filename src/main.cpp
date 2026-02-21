@@ -570,8 +570,10 @@ public:
     static constexpr int kPadLR  = 12;   // horizontal padding
     static constexpr int kPadBot = 4;    // extra bottom padding
 
+    int baselineY = -1;  // set by FlatStatusBar for cross-widget text alignment
+
     QColor colBg, colBgChecked, colBgHover, colBgPressed;
-    QColor colText, colTextMuted, colAccent;
+    QColor colText, colTextMuted, colAccent, colBorder;
 
     explicit ViewTabButton(const QString& text, QWidget* parent = nullptr)
         : QPushButton(text, parent) {
@@ -599,52 +601,27 @@ protected:
         else if (isChecked())  bg = colBgChecked;
         p.fillRect(rect(), bg);
 
-        // Accent line at y=0 when checked
+        // Top border (continuous with status bar hairline)
+        if (colBorder.isValid())
+            p.fillRect(0, 0, width(), 1, colBorder);
+
+        // Accent line at y=0 when checked (paints over border)
         if (isChecked())
             p.fillRect(0, 0, width(), kAccentH, colAccent);
 
-        // Text
+        // Text — use shared baseline if set, otherwise fall back to VCenter
         p.setPen(isChecked() || underMouse() || isDown() ? colText : colTextMuted);
         p.setFont(font());
-        QRect textRect(kPadLR, kAccentH, width() - 2 * kPadLR, height() - kAccentH);
-        p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, text());
+        if (baselineY >= 0) {
+            p.drawText(kPadLR, baselineY, text());
+        } else {
+            QRect textRect(kPadLR, kAccentH, width() - 2 * kPadLR, height() - kAccentH);
+            p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, text());
+        }
     }
 
     void enterEvent(QEnterEvent*) override { update(); }
     void leaveEvent(QEvent*) override { update(); }
-};
-
-// ── Segmented-control container for the view toggle ──
-// Draws a 1px border + rounded rect around the buttons with a vertical
-// separator between segments so it reads as a mode switcher, not text.
-class SegmentedContainer : public QWidget {
-public:
-    QColor colBorder, colSeparator, colBg;
-
-    explicit SegmentedContainer(QWidget* parent = nullptr) : QWidget(parent) {}
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        // Container background + rounded border
-        QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        p.setPen(QPen(colBorder, 1));
-        p.setBrush(colBg);
-        p.drawRoundedRect(r, 3, 3);
-
-        // Vertical separator between each child
-        p.setRenderHint(QPainter::Antialiasing, false);
-        p.setPen(Qt::NoPen);
-        auto* lay = layout();
-        if (!lay) return;
-        for (int i = 0; i < lay->count() - 1; i++) {
-            auto* item = lay->itemAt(i);
-            int x = item->geometry().right() + 1;
-            p.fillRect(x, 3, 1, height() - 6, colSeparator);
-        }
-    }
 };
 
 // ── Borderless status bar with manual child layout ──
@@ -667,7 +644,8 @@ public:
     QSize sizeHint() const override {
         const int tabH  = tabRow ? tabRow->sizeHint().height() : 0;
         const int textH = fontMetrics().height();
-        const int h     = qMax(tabH, textH + 6);
+        const int base  = qMax(tabH, textH + 6);
+        const int h     = qRound(base * 1.15);
         return { QStatusBar::sizeHint().width(), h };
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
@@ -706,6 +684,21 @@ private:
         m_divX = tw;
         label->setGeometry(tw + 1 + gutter, 0,
                            qMax(0, width() - (tw + 1 + gutter)), h);
+
+        // Shared baseline so tab text and status text align
+        QFontMetrics fm(font());
+        int by = (h + fm.ascent()) / 2;
+
+        // Push baseline to buttons
+        auto* lay = tabRow->layout();
+        if (lay) {
+            for (int i = 0; i < lay->count(); i++)
+                static_cast<ViewTabButton*>(lay->itemAt(i)->widget())->baselineY = by;
+        }
+        // Align label: set top margin so text baseline matches
+        int labelTop = by - fm.ascent();
+        label->setContentsMargins(0, labelTop, 0, 0);
+        label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     }
 };
 
@@ -731,8 +724,8 @@ void MainWindow::createStatusBar() {
     m_viewBtnGroup->addButton(m_btnReclass, 0);
     m_viewBtnGroup->addButton(m_btnRendered, 1);
 
-    // Wrap buttons in a segmented-control container (border + separator)
-    auto* tabRow = new SegmentedContainer(sb);
+    // Wrap buttons in a plain container — FlatStatusBar paints the chrome
+    auto* tabRow = new QWidget(sb);
     auto* tabLay = new QHBoxLayout(tabRow);
     tabLay->setContentsMargins(0, 0, 0, 0);
     tabLay->setSpacing(0);
@@ -774,14 +767,10 @@ void MainWindow::createStatusBar() {
             btn->colText      = t.text;
             btn->colTextMuted = t.textMuted;
             btn->colAccent    = t.indHoverSpan;
+            btn->colBorder    = t.border;
         };
         applyViewTabColors(static_cast<ViewTabButton*>(m_btnReclass));
         applyViewTabColors(static_cast<ViewTabButton*>(m_btnRendered));
-
-        auto* seg = static_cast<SegmentedContainer*>(tabRow);
-        seg->colBorder    = t.border;
-        seg->colSeparator = t.border;
-        seg->colBg        = t.background;
     }
 
 }
@@ -1348,6 +1337,7 @@ void MainWindow::applyTheme(const Theme& theme) {
             btn->colText      = theme.text;
             btn->colTextMuted = theme.textMuted;
             btn->colAccent    = theme.indHoverSpan;
+            btn->colBorder    = theme.border;
             btn->update();
         };
         applyColors(static_cast<ViewTabButton*>(m_btnReclass));
@@ -1356,13 +1346,6 @@ void MainWindow::applyTheme(const Theme& theme) {
         {   auto* fsb = static_cast<FlatStatusBar*>(statusBar());
             fsb->setTopLineColor(theme.border);
             fsb->setDividerColor(theme.border);
-            if (fsb->tabRow) {
-                auto* seg = static_cast<SegmentedContainer*>(fsb->tabRow);
-                seg->colBorder    = theme.border;
-                seg->colSeparator = theme.border;
-                seg->colBg        = theme.background;
-                seg->update();
-            }
         }
     }
     // Resize grip (direct child of main window, not in status bar)
