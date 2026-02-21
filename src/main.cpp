@@ -566,7 +566,7 @@ private:
 // ── Custom-painted view tab button (no CSS) ──
 class ViewTabButton : public QPushButton {
 public:
-    static constexpr int kAccentH = 2;   // accent line height in pixels
+    static constexpr int kAccentH = 3;   // accent line height in pixels
     static constexpr int kPadLR  = 12;   // horizontal padding
     static constexpr int kPadBot = 4;    // extra bottom padding
 
@@ -614,6 +614,39 @@ protected:
     void leaveEvent(QEvent*) override { update(); }
 };
 
+// ── Segmented-control container for the view toggle ──
+// Draws a 1px border + rounded rect around the buttons with a vertical
+// separator between segments so it reads as a mode switcher, not text.
+class SegmentedContainer : public QWidget {
+public:
+    QColor colBorder, colSeparator, colBg;
+
+    explicit SegmentedContainer(QWidget* parent = nullptr) : QWidget(parent) {}
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Container background + rounded border
+        QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        p.setPen(QPen(colBorder, 1));
+        p.setBrush(colBg);
+        p.drawRoundedRect(r, 3, 3);
+
+        // Vertical separator between each child
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setPen(Qt::NoPen);
+        auto* lay = layout();
+        if (!lay) return;
+        for (int i = 0; i < lay->count() - 1; i++) {
+            auto* item = lay->itemAt(i);
+            int x = item->geometry().right() + 1;
+            p.fillRect(x, 3, 1, height() - 6, colSeparator);
+        }
+    }
+};
+
 // ── Borderless status bar with manual child layout ──
 // QStatusBarLayout hardcodes 2px margins that can't be overridden.
 // We bypass it entirely: children are placed manually in resizeEvent,
@@ -624,13 +657,33 @@ public:
     QWidget* tabRow   = nullptr;   // set by createStatusBar
     QLabel*  label    = nullptr;   // set by createStatusBar
 
+    void setDividerColor(const QColor& c) { m_div = c; update(); }
+    void setTopLineColor(const QColor& c) { m_top = c; update(); }
+
     explicit FlatStatusBar(QWidget* parent = nullptr) : QStatusBar(parent) {
         setSizeGripEnabled(false);
     }
+
+    QSize sizeHint() const override {
+        const int tabH  = tabRow ? tabRow->sizeHint().height() : 0;
+        const int textH = fontMetrics().height();
+        const int h     = qMax(tabH, textH + 6);
+        return { QStatusBar::sizeHint().width(), h };
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
         p.fillRect(rect(), palette().window());
+
+        // Top hairline separator
+        if (m_top.isValid())
+            p.fillRect(0, 0, width(), 1, m_top);
+
+        // Vertical divider between tabRow and label
+        if (m_div.isValid() && m_divX >= 0)
+            p.fillRect(m_divX, 4, 1, height() - 8, m_div);
     }
     void resizeEvent(QResizeEvent* e) override {
         QStatusBar::resizeEvent(e);
@@ -641,12 +694,18 @@ protected:
         manualLayout();
     }
 private:
+    QColor m_div, m_top;
+    int m_divX = -1;
+
     void manualLayout() {
         if (!tabRow || !label) return;
-        int h = height();
-        int tw = tabRow->sizeHint().width();
+        const int h      = height();
+        const int tw     = tabRow->sizeHint().width();
+        const int gutter = 6;
         tabRow->setGeometry(0, 0, tw, h);
-        label->setGeometry(tw, 0, width() - tw, h);
+        m_divX = tw;
+        label->setGeometry(tw + 1 + gutter, 0,
+                           qMax(0, width() - (tw + 1 + gutter)), h);
     }
 };
 
@@ -657,7 +716,8 @@ void MainWindow::createStatusBar() {
     setStatusBar(sb);
 
     m_statusLabel = new QLabel("Ready", sb);
-    m_statusLabel->setContentsMargins(10, 0, 0, 0);
+    m_statusLabel->setContentsMargins(0, 0, 0, 0);
+    m_statusLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
 
     // View toggle buttons (Reclass / C/C++) — custom painted, no CSS
     m_viewBtnGroup = new QButtonGroup(this);
@@ -671,8 +731,8 @@ void MainWindow::createStatusBar() {
     m_viewBtnGroup->addButton(m_btnReclass, 0);
     m_viewBtnGroup->addButton(m_btnRendered, 1);
 
-    // Wrap buttons in a zero-margin container — direct child of status bar
-    auto* tabRow = new QWidget(sb);
+    // Wrap buttons in a segmented-control container (border + separator)
+    auto* tabRow = new SegmentedContainer(sb);
     auto* tabLay = new QHBoxLayout(tabRow);
     tabLay->setContentsMargins(0, 0, 0, 0);
     tabLay->setSpacing(0);
@@ -681,6 +741,9 @@ void MainWindow::createStatusBar() {
 
     sb->tabRow = tabRow;
     sb->label  = m_statusLabel;
+
+    sb->setMinimumHeight(qMax(m_btnReclass->sizeHint().height(),
+                              sb->fontMetrics().height() + 6));
 
     connect(m_viewBtnGroup, &QButtonGroup::idClicked, this, [this](int id) {
         setViewMode(id == 1 ? VM_Rendered : VM_Reclass);
@@ -700,6 +763,9 @@ void MainWindow::createStatusBar() {
         statusBar()->setPalette(sbPal);
         statusBar()->setAutoFillBackground(true);
 
+        sb->setTopLineColor(t.border);
+        sb->setDividerColor(t.border);
+
         auto applyViewTabColors = [&](ViewTabButton* btn) {
             btn->colBg        = t.background;
             btn->colBgChecked = t.backgroundAlt;
@@ -711,17 +777,13 @@ void MainWindow::createStatusBar() {
         };
         applyViewTabColors(static_cast<ViewTabButton*>(m_btnReclass));
         applyViewTabColors(static_cast<ViewTabButton*>(m_btnRendered));
+
+        auto* seg = static_cast<SegmentedContainer*>(tabRow);
+        seg->colBorder    = t.border;
+        seg->colSeparator = t.border;
+        seg->colBg        = t.background;
     }
 
-    // Sync status bar font with editor font at startup
-    {
-        QString fontName = QSettings("Reclass", "Reclass").value("font", "JetBrains Mono").toString();
-        QFont f(fontName, 12);
-        f.setFixedPitch(true);
-        statusBar()->setFont(f);
-        m_btnReclass->setFont(f);
-        m_btnRendered->setFont(f);
-    }
 }
 
 
@@ -1276,7 +1338,7 @@ void MainWindow::applyTheme(const Theme& theme) {
         sbPal.setColor(QPalette::WindowText, theme.textDim);
         statusBar()->setPalette(sbPal);
     }
-    // View toggle buttons in status bar
+    // View toggle buttons + status bar chrome
     {
         auto applyColors = [&](ViewTabButton* btn) {
             btn->colBg        = theme.background;
@@ -1290,6 +1352,18 @@ void MainWindow::applyTheme(const Theme& theme) {
         };
         applyColors(static_cast<ViewTabButton*>(m_btnReclass));
         applyColors(static_cast<ViewTabButton*>(m_btnRendered));
+
+        {   auto* fsb = static_cast<FlatStatusBar*>(statusBar());
+            fsb->setTopLineColor(theme.border);
+            fsb->setDividerColor(theme.border);
+            if (fsb->tabRow) {
+                auto* seg = static_cast<SegmentedContainer*>(fsb->tabRow);
+                seg->colBorder    = theme.border;
+                seg->colSeparator = theme.border;
+                seg->colBg        = theme.background;
+                seg->update();
+            }
+        }
     }
     // Resize grip (direct child of main window, not in status bar)
     if (auto* w = findChild<QWidget*>("resizeGrip"))
@@ -1427,10 +1501,6 @@ void MainWindow::setEditorFont(const QString& fontName) {
     // Sync dock titlebar font
     if (m_dockTitleLabel)
         m_dockTitleLabel->setFont(f);
-    // Sync status bar font
-    statusBar()->setFont(f);
-    m_btnReclass->setFont(f);
-    m_btnRendered->setFont(f);
 }
 
 RcxController* MainWindow::activeController() const {

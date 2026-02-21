@@ -46,32 +46,7 @@ jobs:
           export PATH="$IQTA_TOOLS/mingw1310_64/bin:$PATH"
           ctest --test-dir build --output-on-failure
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Reclass-win64-qt6
-          path: |
-            build/Reclass.exe
-            build/ReclassMcpBridge.exe
-            build/Plugins/*.dll
-            build/*.dll
-            build/platforms/
-            build/styles/
-            build/imageformats/
-            build/iconengines/
-            build/themes/
-            build/examples/
-            build/screenshot.png
-
-      - name: Get date tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: date
-        shell: bash
-        run: echo "tag=$(date +'%d-%m-%Y')" >> "$GITHUB_OUTPUT"
-
       - name: Package release zip
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           mkdir -p release
@@ -89,19 +64,11 @@ jobs:
           cp build/screenshot.png release/ 2>/dev/null || true
           cd release && 7z a ../Reclass-win64-qt6.zip *
 
-      - name: Upload release asset
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: snapshot-${{ steps.date.outputs.tag }}
-          name: Snapshot ${{ steps.date.outputs.tag }}
-          body: |
-            Automated snapshot from main branch.
-            Commit: ${{ github.sha }}
-          prerelease: false
-          files: Reclass-win64-qt6.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: Reclass-win64-qt6
+          path: Reclass-win64-qt6.zip
 
   linux:
     runs-on: ubuntu-22.04
@@ -167,19 +134,26 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: Reclass-linux64-qt6
           path: Reclass-linux64-qt6.AppImage
 
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Get date tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: date
-        shell: bash
         run: echo "tag=$(date +'%d-%m-%Y')" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release asset
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: snapshot-${{ steps.date.outputs.tag }}
@@ -188,6 +162,8 @@ jobs:
             Automated snapshot from main branch.
             Commit: ${{ github.sha }}
           prerelease: false
-          files: Reclass-linux64-qt6.AppImage
+          files: |
+            artifacts/Reclass-win64-qt6/Reclass-win64-qt6.zip
+            artifacts/Reclass-linux64-qt6/Reclass-linux64-qt6.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
