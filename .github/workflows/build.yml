@@ -49,6 +49,7 @@ jobs:
       - name: Package release zip
         shell: bash
         run: |
+          export PATH="$IQTA_TOOLS/mingw1310_64/bin:$PATH"
           mkdir -p release
           cp build/Reclass.exe release/
           cp build/ReclassMcpBridge.exe release/
@@ -57,6 +58,7 @@ jobs:
           cp -r build/styles release/ 2>/dev/null || true
           cp -r build/imageformats release/ 2>/dev/null || true
           cp -r build/iconengines release/ 2>/dev/null || true
+          windeployqt --no-translations --no-system-d3d-compiler --no-opengl-sw release/Reclass.exe
           mkdir -p release/Plugins
           cp build/Plugins/*.dll release/Plugins/ 2>/dev/null || true
           cp -r build/themes release/ 2>/dev/null || true
