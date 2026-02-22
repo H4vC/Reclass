@@ -4,7 +4,7 @@
  *
  * Usage:
  *   test_rpc_client                          (auto-spawn host)
- *   test_rpc_client <pid> <nonce> [testbuf_hex testlen]
+ *   test_rpc_client <pid> [testbuf_hex testlen]
  */
 
 #include "../rcx_rpc_protocol.h"
@@ -45,12 +45,12 @@ struct TestIpcClient {
     void*  view       = nullptr;
     bool   ok         = false;
 
-    bool connect(uint32_t pid, const char* nonce, int timeoutMs = 5000)
+    bool connect(uint32_t pid, int timeoutMs = 5000)
     {
         char shmName[128], reqName[128], rspName[128];
-        rcx_rpc_shm_name(shmName, sizeof(shmName), pid, nonce);
-        rcx_rpc_req_name(reqName, sizeof(reqName), pid, nonce);
-        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid, nonce);
+        rcx_rpc_shm_name(shmName, sizeof(shmName), pid);
+        rcx_rpc_req_name(reqName, sizeof(reqName), pid);
+        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid);
 
 #ifdef _WIN32
         ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeoutMs;
@@ -268,7 +268,7 @@ static pid_t  g_hostPid = 0;
 #endif
 static FILE*  g_hostPipe = nullptr;
 
-static bool spawn_host(uint32_t* outPid, char* outNonce,
+static bool spawn_host(uint32_t* outPid,
                         uint64_t* outTestBuf, uint32_t* outTestLen)
 {
     /* resolve path to test_rpc_host next to ourselves */
@@ -302,11 +302,11 @@ static bool spawn_host(uint32_t* outPid, char* outNonce,
         return false;
     }
 
-    /* parse: READY pid=X nonce=Y testbuf=0xZ testlen=N */
+    /* parse: READY pid=X testbuf=0xZ testlen=N */
     unsigned long long tbuf = 0;
     unsigned tlen = 0;
-    if (sscanf(line, "READY pid=%u nonce=%63s testbuf=0x%llx testlen=%u",
-               outPid, outNonce, &tbuf, &tlen) < 2) {
+    if (sscanf(line, "READY pid=%u testbuf=0x%llx testlen=%u",
+               outPid, &tbuf, &tlen) < 1) {
         fprintf(stderr, "ERROR: cannot parse host output: %s\n", line);
         return false;
     }
@@ -341,30 +341,28 @@ static void print_fail(const char* name) { printf("  [FAIL] %s\n", name); exit(1
 int main(int argc, char** argv)
 {
     uint32_t pid = 0;
-    char nonce[64] = {};
     uint64_t testBuf = 0;
     uint32_t testLen = 0;
     bool autoMode = false;
 
-    if (argc >= 3) {
+    if (argc >= 2) {
         pid = (uint32_t)atoi(argv[1]);
-        strncpy(nonce, argv[2], 63);
-        if (argc >= 5) {
-            testBuf = (uint64_t)strtoull(argv[3], nullptr, 0);
-            testLen = (uint32_t)atoi(argv[4]);
+        if (argc >= 4) {
+            testBuf = (uint64_t)strtoull(argv[2], nullptr, 0);
+            testLen = (uint32_t)atoi(argv[3]);
         }
     } else {
         autoMode = true;
         printf("Auto-spawning test_rpc_host...\n");
-        if (!spawn_host(&pid, nonce, &testBuf, &testLen)) return 1;
+        if (!spawn_host(&pid, &testBuf, &testLen)) return 1;
     }
 
-    printf("Connecting to PID=%u  nonce=%s  testbuf=0x%llx  testlen=%u\n\n",
-           pid, nonce, (unsigned long long)testBuf, testLen);
+    printf("Connecting to PID=%u  testbuf=0x%llx  testlen=%u\n\n",
+           pid, (unsigned long long)testBuf, testLen);
 
     /* ── connect ── */
     TestIpcClient ipc;
-    if (!ipc.connect(pid, nonce)) {
+    if (!ipc.connect(pid)) {
         fprintf(stderr, "ERROR: IPC connect failed\n");
         if (autoMode) cleanup_host();
         return 1;

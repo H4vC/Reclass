@@ -2,9 +2,8 @@
  * rcx_payload  --  injected into target process.
  *
  * Pure Win32 / POSIX, NO Qt, minimal footprint.
- * Reads a nonce from bootstrap shared memory, creates the main IPC
- * channel (shared memory + events/semaphores), and runs a server
- * thread that handles RPC commands from the editor plugin.
+ * Creates the main IPC channel (shared memory + events/semaphores)
+ * using PID-only naming and uses a timer queue for polling.
  */
 
 #include "../rcx_rpc_protocol.h"
@@ -18,11 +17,12 @@
 #include <psapi.h>
 
 /* ── globals ──────────────────────────────────────────────────────── */
-static HANDLE  g_hShm      = nullptr;
-static void*   g_mappedView = nullptr;
-static HANDLE  g_hReqEvent = nullptr;
-static HANDLE  g_hRspEvent = nullptr;
-static HANDLE  g_hThread   = nullptr;
+static HANDLE  g_hShm        = nullptr;
+static void*   g_mappedView  = nullptr;
+static HANDLE  g_hReqEvent   = nullptr;
+static HANDLE  g_hRspEvent   = nullptr;
+static HANDLE  g_hTimerQueue = nullptr;
+static HANDLE  g_hTimer      = nullptr;
 static volatile LONG g_shutdown = 0;
 
 /* ── memory safety via VirtualQuery ────────────────────────────────── */
@@ -167,63 +167,59 @@ static void handle_enum_modules(RcxRpcHeader* hdr, uint8_t* data)
     hdr->status        = RCX_RPC_STATUS_OK;
 }
 
-/* ── server thread ────────────────────────────────────────────────── */
+/* ── timer callback (replaces server thread) ─────────────────────── */
 
-static DWORD WINAPI ServerThread(LPVOID)
+static VOID CALLBACK PollCallback(PVOID, BOOLEAN)
 {
-    auto* hdr = static_cast<RcxRpcHeader*>(g_mappedView);
+    if (InterlockedCompareExchange(&g_shutdown, 0, 0))
+        return;
+
+    DWORD rc = WaitForSingleObject(g_hReqEvent, 0);
+    if (rc != WAIT_OBJECT_0)
+        return;
+
+    auto* hdr  = static_cast<RcxRpcHeader*>(g_mappedView);
     auto* data = reinterpret_cast<uint8_t*>(g_mappedView) + RCX_RPC_DATA_OFFSET;
 
-    /* signal readiness */
-    InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 1);
+    hdr->status = RCX_RPC_STATUS_OK;
 
-    while (!InterlockedCompareExchange(&g_shutdown, 0, 0)) {
-        DWORD rc = WaitForSingleObject(g_hReqEvent, 250);
-        if (rc == WAIT_TIMEOUT)
-            continue;
-        if (rc != WAIT_OBJECT_0)
-            break;
-
-        hdr->status = RCX_RPC_STATUS_OK;
-
-        switch (static_cast<RcxRpcCommand>(hdr->command)) {
-        case RPC_CMD_READ_BATCH:   handle_read_batch(hdr, data); break;
-        case RPC_CMD_WRITE:        handle_write(hdr, data);      break;
-        case RPC_CMD_ENUM_MODULES: handle_enum_modules(hdr, data); break;
-        case RPC_CMD_PING:         break;
-        case RPC_CMD_SHUTDOWN:
-            InterlockedExchange(&g_shutdown, 1);
-            break;
-        default:
-            hdr->status = RCX_RPC_STATUS_ERROR;
-            break;
-        }
-
-        SetEvent(g_hRspEvent);
-
-        if (static_cast<RcxRpcCommand>(hdr->command) == RPC_CMD_SHUTDOWN)
-            break;
+    switch (static_cast<RcxRpcCommand>(hdr->command)) {
+    case RPC_CMD_READ_BATCH:   handle_read_batch(hdr, data); break;
+    case RPC_CMD_WRITE:        handle_write(hdr, data);      break;
+    case RPC_CMD_ENUM_MODULES: handle_enum_modules(hdr, data); break;
+    case RPC_CMD_PING:         break;
+    case RPC_CMD_SHUTDOWN:
+        InterlockedExchange(&g_shutdown, 1);
+        break;
+    default:
+        hdr->status = RCX_RPC_STATUS_ERROR;
+        break;
     }
 
-    /* mark not-ready so the host process can detect shutdown */
-    InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 0);
-    return 0;
+    SetEvent(g_hRspEvent);
 }
 
 /* ── cleanup ──────────────────────────────────────────────────────── */
 
-static void Cleanup(bool waitThread)
+static void Cleanup()
 {
     InterlockedExchange(&g_shutdown, 1);
 
-    /* wake the thread if it's blocked on REQ */
-    if (g_hReqEvent) SetEvent(g_hReqEvent);
-
-    if (waitThread && g_hThread) {
-        WaitForSingleObject(g_hThread, 2000);
+    if (g_hTimer) {
+        DeleteTimerQueueTimer(g_hTimerQueue, g_hTimer, INVALID_HANDLE_VALUE);
+        g_hTimer = nullptr;
     }
-    if (g_hThread)   { CloseHandle(g_hThread);   g_hThread   = nullptr; }
-    if (g_mappedView){ UnmapViewOfFile(g_mappedView); g_mappedView = nullptr; }
+    if (g_hTimerQueue) {
+        DeleteTimerQueueEx(g_hTimerQueue, INVALID_HANDLE_VALUE);
+        g_hTimerQueue = nullptr;
+    }
+
+    if (g_mappedView) {
+        auto* hdr = static_cast<RcxRpcHeader*>(g_mappedView);
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 0);
+        UnmapViewOfFile(g_mappedView);
+        g_mappedView = nullptr;
+    }
     if (g_hShm)      { CloseHandle(g_hShm);      g_hShm      = nullptr; }
     if (g_hReqEvent) { CloseHandle(g_hReqEvent);  g_hReqEvent = nullptr; }
     if (g_hRspEvent) { CloseHandle(g_hRspEvent);  g_hRspEvent = nullptr; }
@@ -231,36 +227,16 @@ static void Cleanup(bool waitThread)
 
 /* ── DllMain ──────────────────────────────────────────────────────── */
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
         uint32_t pid = GetCurrentProcessId();
 
-        /* ── read nonce from bootstrap shm ── */
-        char bootName[128];
-        rcx_rpc_boot_name(bootName, sizeof(bootName), pid);
-
-        HANDLE hBoot = OpenFileMappingA(FILE_MAP_READ, FALSE, bootName);
-        if (!hBoot) return TRUE;   /* no bootstrap = nothing to do */
-
-        auto* bootView = static_cast<const RcxRpcBootHeader*>(
-            MapViewOfFile(hBoot, FILE_MAP_READ, 0, 0, RCX_RPC_BOOT_SIZE));
-        if (!bootView) { CloseHandle(hBoot); return TRUE; }
-
-        char nonce[64] = {};
-        uint32_t nLen = bootView->nonceLength;
-        if (nLen > 59) nLen = 59;
-        memcpy(nonce, bootView->nonce, nLen);
-        nonce[nLen] = '\0';
-
-        UnmapViewOfFile(bootView);
-        CloseHandle(hBoot);
-
-        /* ── create main shared memory ── */
+        /* ── create main shared memory (PID-only naming) ── */
         char shmName[128], reqName[128], rspName[128];
-        rcx_rpc_shm_name(shmName, sizeof(shmName), pid, nonce);
-        rcx_rpc_req_name(reqName, sizeof(reqName), pid, nonce);
-        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid, nonce);
+        rcx_rpc_shm_name(shmName, sizeof(shmName), pid);
+        rcx_rpc_req_name(reqName, sizeof(reqName), pid);
+        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid);
 
         g_hShm = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr,
                                     PAGE_READWRITE, 0, RCX_RPC_SHM_SIZE, shmName);
@@ -273,27 +249,36 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
         auto* hdr = static_cast<RcxRpcHeader*>(g_mappedView);
         hdr->version = RCX_RPC_VERSION;
 
-        /* image base from PEB: gs:[0x60] → PEB, +0x18 → Ldr, Flink → first entry, +0x30 → DllBase */
+        /* image base from PEB: gs:[0x60] -> PEB, +0x18 -> Ldr, Flink -> first entry, +0x30 -> DllBase */
         {
             uint64_t peb;
             asm volatile("mov %%gs:0x60, %0" : "=r"(peb));
             uint64_t ldr       = *reinterpret_cast<uint64_t*>(peb + 0x18);
-            uint64_t firstLink = *reinterpret_cast<uint64_t*>(ldr + 0x10);  /* InLoadOrderModuleList.Flink */
-            hdr->imageBase     = *reinterpret_cast<uint64_t*>(firstLink + 0x30);  /* DllBase */
+            uint64_t firstLink = *reinterpret_cast<uint64_t*>(ldr + 0x10);
+            hdr->imageBase     = *reinterpret_cast<uint64_t*>(firstLink + 0x30);
         }
 
         /* ── create events ── */
         g_hReqEvent = CreateEventA(nullptr, FALSE, FALSE, reqName);
         g_hRspEvent = CreateEventA(nullptr, FALSE, FALSE, rspName);
-        if (!g_hReqEvent || !g_hRspEvent) { Cleanup(false); return TRUE; }
+        if (!g_hReqEvent || !g_hRspEvent) { Cleanup(); return TRUE; }
 
-        /* ── start server thread (payloadReady set by the thread) ── */
-        g_hThread = CreateThread(nullptr, 0, ServerThread, nullptr, 0, nullptr);
-        if (!g_hThread) { Cleanup(false); return TRUE; }
+        /* ── start timer queue (10ms poll interval) ── */
+        g_hTimerQueue = CreateTimerQueue();
+        if (!g_hTimerQueue) { Cleanup(); return TRUE; }
+
+        if (!CreateTimerQueueTimer(&g_hTimer, g_hTimerQueue,
+                                   PollCallback, nullptr, 0, 10,
+                                   WT_EXECUTEDEFAULT)) {
+            Cleanup();
+            return TRUE;
+        }
+
+        /* signal readiness */
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 1);
     }
     else if (reason == DLL_PROCESS_DETACH) {
-        /* reserved != NULL → process is terminating (threads already dead) */
-        Cleanup(reserved == nullptr);
+        Cleanup();
     }
 
     return TRUE;
@@ -529,37 +514,14 @@ static void payload_init()
 {
     uint32_t pid = (uint32_t)getpid();
 
-    /* ── read nonce from bootstrap shm ── */
-    char bootName[128];
-    rcx_rpc_boot_name(bootName, sizeof(bootName), pid);
-
-    int bootFd = shm_open(bootName, O_RDONLY, 0);
-    if (bootFd < 0) return;
-
-    void* bootView = mmap(nullptr, RCX_RPC_BOOT_SIZE, PROT_READ,
-                          MAP_SHARED, bootFd, 0);
-    close(bootFd);
-    if (bootView == MAP_FAILED) return;
-
-    auto* boot = static_cast<const RcxRpcBootHeader*>(bootView);
-    char nonce[64] = {};
-    uint32_t nLen = boot->nonceLength;
-    if (nLen > 59) nLen = 59;
-    memcpy(nonce, boot->nonce, nLen);
-    nonce[nLen] = '\0';
-    munmap(bootView, RCX_RPC_BOOT_SIZE);
-
-    /* one-shot, unlink bootstrap */
-    shm_unlink(bootName);
-
     /* ── open /proc/self/mem for safe access ── */
     g_memFd = open("/proc/self/mem", O_RDWR);
     if (g_memFd < 0) return;
 
-    /* ── create main shared memory ── */
-    rcx_rpc_shm_name(g_shmName, sizeof(g_shmName), pid, nonce);
-    rcx_rpc_req_name(g_reqName, sizeof(g_reqName), pid, nonce);
-    rcx_rpc_rsp_name(g_rspName, sizeof(g_rspName), pid, nonce);
+    /* ── create main shared memory (PID-only naming) ── */
+    rcx_rpc_shm_name(g_shmName, sizeof(g_shmName), pid);
+    rcx_rpc_req_name(g_reqName, sizeof(g_reqName), pid);
+    rcx_rpc_rsp_name(g_rspName, sizeof(g_rspName), pid);
 
     g_shmFd = shm_open(g_shmName, O_CREAT | O_RDWR, 0600);
     if (g_shmFd < 0) return;

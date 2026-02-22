@@ -5,9 +5,7 @@
 #include <QStyle>
 #include <QApplication>
 #include <QMessageBox>
-#include <QInputDialog>
 #include <QPushButton>
-#include <QUuid>
 #include <QDir>
 #include <QFileInfo>
 #include <QPixmap>
@@ -65,12 +63,12 @@ struct IpcClient {
 
     /* ── connect / disconnect ──────────────────────────────────────── */
 
-    bool connect(uint32_t pid, const QByteArray& nonce, int timeoutMs = 5000)
+    bool connect(uint32_t pid, int timeoutMs = 5000)
     {
         char shmName[128], reqName[128], rspName[128];
-        rcx_rpc_shm_name(shmName, sizeof(shmName), pid, nonce.constData());
-        rcx_rpc_req_name(reqName, sizeof(reqName), pid, nonce.constData());
-        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid, nonce.constData());
+        rcx_rpc_shm_name(shmName, sizeof(shmName), pid);
+        rcx_rpc_req_name(reqName, sizeof(reqName), pid);
+        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid);
 
 #ifdef _WIN32
         /* poll for shared memory to appear (payload creating it) */
@@ -373,51 +371,6 @@ static QString payloadPath()
 #endif
 }
 
-/* Create bootstrap shared memory with the nonce */
-static bool createBootstrapShm(uint32_t pid, const QByteArray& nonce)
-{
-    char bootName[128];
-    rcx_rpc_boot_name(bootName, sizeof(bootName), pid);
-
-#ifdef _WIN32
-    HANDLE hBoot = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr,
-                                      PAGE_READWRITE, 0, RCX_RPC_BOOT_SIZE,
-                                      bootName);
-    if (!hBoot) return false;
-
-    auto* view = static_cast<RcxRpcBootHeader*>(
-        MapViewOfFile(hBoot, FILE_MAP_WRITE, 0, 0, RCX_RPC_BOOT_SIZE));
-    if (!view) { CloseHandle(hBoot); return false; }
-
-    memset(view, 0, RCX_RPC_BOOT_SIZE);
-    view->nonceLength = (uint32_t)nonce.size();
-    memcpy(view->nonce, nonce.constData(), qMin(nonce.size(), 59));
-
-    UnmapViewOfFile(view);
-    /* keep hBoot open until payload reads it (payload unlinks after reading) */
-    /* leak intentional: closed when process exits or payload consumes it */
-    return true;
-#else
-    int fd = shm_open(bootName, O_CREAT | O_RDWR, 0600);
-    if (fd < 0) return false;
-    if (ftruncate(fd, RCX_RPC_BOOT_SIZE) != 0) { close(fd); return false; }
-
-    void* view = mmap(nullptr, RCX_RPC_BOOT_SIZE, PROT_READ | PROT_WRITE,
-                      MAP_SHARED, fd, 0);
-    close(fd);
-    if (view == MAP_FAILED) return false;
-
-    auto* boot = static_cast<RcxRpcBootHeader*>(view);
-    memset(boot, 0, RCX_RPC_BOOT_SIZE);
-    boot->nonceLength = (uint32_t)nonce.size();
-    memcpy(boot->nonce, nonce.constData(), qMin(nonce.size(), 59));
-
-    munmap(view, RCX_RPC_BOOT_SIZE);
-    /* payload unlinks after consuming */
-    return true;
-#endif
-}
-
 #ifdef _WIN32
 /* ── Windows injection: CreateRemoteThread + LoadLibraryA ─────────── */
 
@@ -717,24 +670,23 @@ bool RemoteProcessMemoryPlugin::canHandle(const QString& target) const
 std::unique_ptr<rcx::Provider>
 RemoteProcessMemoryPlugin::createProvider(const QString& target, QString* errorMsg)
 {
-    /* target = "rpm:{pid}:{nonce}:{name}" */
+    /* target = "rpm:{pid}:{name}" */
     QStringList parts = target.split(':');
-    if (parts.size() < 4 || parts[0] != QStringLiteral("rpm")) {
+    if (parts.size() < 3 || parts[0] != QStringLiteral("rpm")) {
         if (errorMsg) *errorMsg = QStringLiteral("Invalid target: ") + target;
         return nullptr;
     }
 
     bool ok;
-    uint32_t pid  = parts[1].toUInt(&ok);
-    QString nonce = parts[2];
-    QString name  = parts.mid(3).join(':');  /* name may contain colons */
+    uint32_t pid = parts[1].toUInt(&ok);
+    QString name = parts.mid(2).join(':');  /* name may contain colons */
 
     if (!ok || pid == 0) {
         if (errorMsg) *errorMsg = QStringLiteral("Invalid PID in target.");
         return nullptr;
     }
 
-    auto ipc = getOrCreateConnection(pid, nonce, errorMsg);
+    auto ipc = getOrCreateConnection(pid, errorMsg);
     if (!ipc) return nullptr;
 
     return std::make_unique<RemoteProcessProvider>(pid, name, ipc);
@@ -745,7 +697,7 @@ uint64_t RemoteProcessMemoryPlugin::getInitialBaseAddress(const QString& target)
     /* Read imageBase directly from the shared-memory header -- zero IPC cost.
        The payload filled it at init from PEB->Ldr (Win) / /proc/self/maps (Linux). */
     QStringList parts = target.split(':');
-    if (parts.size() < 3 || parts[0] != QStringLiteral("rpm"))
+    if (parts.size() < 2 || parts[0] != QStringLiteral("rpm"))
         return 0;
 
     bool ok;
@@ -793,35 +745,17 @@ bool RemoteProcessMemoryPlugin::selectTarget(QWidget* parent, QString* target)
 
     QAbstractButton* clicked = box.clickedButton();
     if (clicked == injectBtn) {
-        /* generate nonce */
-        QString nonce = QUuid::createUuid().toString(QUuid::Id128).left(16);
-        QByteArray nonceUtf8 = nonce.toUtf8();
-
-        /* create bootstrap, inject */
-        if (!createBootstrapShm(pid, nonceUtf8)) {
-            QMessageBox::critical(parent, QStringLiteral("Error"),
-                                  QStringLiteral("Failed to create bootstrap shared memory."));
-            return false;
-        }
-
         QString injectErr;
         if (!injectPayload(pid, &injectErr)) {
             QMessageBox::critical(parent, QStringLiteral("Injection Failed"), injectErr);
             return false;
         }
 
-        *target = QStringLiteral("rpm:%1:%2:%3").arg(pid).arg(nonce, name);
+        *target = QStringLiteral("rpm:%1:%2").arg(pid).arg(name);
         return true;
     }
     else if (clicked == connectBtn) {
-        bool ok;
-        QString nonce = QInputDialog::getText(parent,
-            QStringLiteral("Connect to Payload"),
-            QStringLiteral("Enter the payload nonce:"),
-            QLineEdit::Normal, QString(), &ok);
-        if (!ok || nonce.isEmpty()) return false;
-
-        *target = QStringLiteral("rpm:%1:%2:%3").arg(pid).arg(nonce, name);
+        *target = QStringLiteral("rpm:%1:%2").arg(pid).arg(name);
         return true;
     }
 
@@ -903,7 +837,7 @@ QVector<PluginProcessInfo> RemoteProcessMemoryPlugin::enumerateProcesses()
 
 std::shared_ptr<IpcClient>
 RemoteProcessMemoryPlugin::getOrCreateConnection(
-        uint32_t pid, const QString& nonce, QString* errorMsg)
+        uint32_t pid, QString* errorMsg)
 {
     QMutexLocker lock(&m_connectionsMutex);
 
@@ -912,7 +846,7 @@ RemoteProcessMemoryPlugin::getOrCreateConnection(
         return *it;
 
     auto ipc = std::make_shared<IpcClient>();
-    if (!ipc->connect(pid, nonce.toUtf8())) {
+    if (!ipc->connect(pid)) {
         if (errorMsg)
             *errorMsg = QStringLiteral("Failed to connect IPC to PID %1.\n"
                                        "Is the payload running?").arg(pid);

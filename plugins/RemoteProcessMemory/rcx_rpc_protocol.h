@@ -15,7 +15,6 @@
 #define RCX_RPC_HEADER_SIZE   4096
 #define RCX_RPC_DATA_OFFSET   RCX_RPC_HEADER_SIZE
 #define RCX_RPC_DATA_SIZE     (RCX_RPC_SHM_SIZE - RCX_RPC_DATA_OFFSET)
-#define RCX_RPC_BOOT_SIZE     64
 
 /* status codes */
 #define RCX_RPC_STATUS_OK       0
@@ -83,47 +82,32 @@ struct RcxRpcHeader {
     uint8_t  _pad[RCX_RPC_HEADER_SIZE - 48];
 };
 
-/* Bootstrap shm -- 64 bytes, carries the nonce from plugin to payload */
-struct RcxRpcBootHeader {
-    uint32_t nonceLength;
-    char     nonce[60];
-};
+/* ── name formatting helpers (PID-only, no nonce) ─────────────────── */
 
-/* ── name formatting helpers ───────────────────────────────────────── */
-
-static inline void rcx_rpc_boot_name(char* buf, int n, uint32_t pid) {
+static inline void rcx_rpc_shm_name(char* buf, int n, uint32_t pid) {
 #ifdef _WIN32
-    snprintf(buf, n, "Local\\RCX_BOOT_%u", pid);
+    snprintf(buf, n, "Local\\RCX_SHM_%u", pid);
 #else
-    snprintf(buf, n, "/rcx_boot_%u", pid);
+    snprintf(buf, n, "/rcx_shm_%u", pid);
 #endif
 }
 
-static inline void rcx_rpc_shm_name(char* buf, int n, uint32_t pid, const char* nonce) {
+static inline void rcx_rpc_req_name(char* buf, int n, uint32_t pid) {
 #ifdef _WIN32
-    snprintf(buf, n, "Local\\RCX_SHM_%u_%s", pid, nonce);
+    snprintf(buf, n, "Local\\RCX_REQ_%u", pid);
 #else
-    snprintf(buf, n, "/rcx_shm_%u_%s", pid, nonce);
+    snprintf(buf, n, "/rcx_req_%u", pid);
 #endif
 }
 
-static inline void rcx_rpc_req_name(char* buf, int n, uint32_t pid, const char* nonce) {
+static inline void rcx_rpc_rsp_name(char* buf, int n, uint32_t pid) {
 #ifdef _WIN32
-    snprintf(buf, n, "Local\\RCX_REQ_%u_%s", pid, nonce);
+    snprintf(buf, n, "Local\\RCX_RSP_%u", pid);
 #else
-    snprintf(buf, n, "/rcx_req_%u_%s", pid, nonce);
-#endif
-}
-
-static inline void rcx_rpc_rsp_name(char* buf, int n, uint32_t pid, const char* nonce) {
-#ifdef _WIN32
-    snprintf(buf, n, "Local\\RCX_RSP_%u_%s", pid, nonce);
-#else
-    snprintf(buf, n, "/rcx_rsp_%u_%s", pid, nonce);
+    snprintf(buf, n, "/rcx_rsp_%u", pid);
 #endif
 }
 
 #ifdef __cplusplus
-static_assert(sizeof(RcxRpcHeader)     == RCX_RPC_HEADER_SIZE, "Header must be 4096 bytes");
-static_assert(sizeof(RcxRpcBootHeader) <= RCX_RPC_BOOT_SIZE,   "Boot header must fit 64 bytes");
+static_assert(sizeof(RcxRpcHeader) == RCX_RPC_HEADER_SIZE, "Header must be 4096 bytes");
 #endif

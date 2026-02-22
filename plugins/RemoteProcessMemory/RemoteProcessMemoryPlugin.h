@@ -77,7 +77,7 @@ public:
 
 private:
     std::shared_ptr<IpcClient> getOrCreateConnection(
-        uint32_t pid, const QString& nonce, QString* errorMsg);
+        uint32_t pid, QString* errorMsg);
 
     mutable QMutex m_connectionsMutex;
     QHash<uint32_t, std::shared_ptr<IpcClient>> m_connections;

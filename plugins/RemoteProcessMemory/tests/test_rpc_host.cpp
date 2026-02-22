@@ -1,7 +1,7 @@
 /*
  * test_rpc_host  --  loads rcx_payload in-process, acts as the "target".
  *
- * Usage:  test_rpc_host [nonce]
+ * Usage:  test_rpc_host
  *
  * Prints a READY line (machine-parseable), then waits for the payload
  * to shut down (RPC_CMD_SHUTDOWN from the client).
@@ -68,50 +68,11 @@ static int payload_path(char* out, int outLen)
     return 0;
 }
 
-/* Create bootstrap shared memory with the nonce */
-static int create_bootstrap(uint32_t pid, const char* nonce)
-{
-    char bootName[128];
-    rcx_rpc_boot_name(bootName, sizeof(bootName), pid);
-
-#ifdef _WIN32
-    HANDLE h = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr,
-                                  PAGE_READWRITE, 0, RCX_RPC_BOOT_SIZE, bootName);
-    if (!h) return -1;
-    void* v = MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, RCX_RPC_BOOT_SIZE);
-    if (!v) { CloseHandle(h); return -1; }
-
-    RcxRpcBootHeader* boot = (RcxRpcBootHeader*)v;
-    memset(boot, 0, RCX_RPC_BOOT_SIZE);
-    boot->nonceLength = (uint32_t)strlen(nonce);
-    strncpy(boot->nonce, nonce, 59);
-
-    UnmapViewOfFile(v);
-    /* keep h open for payload to read */
-    return 0;
-#else
-    int fd = shm_open(bootName, O_CREAT | O_RDWR, 0600);
-    if (fd < 0) return -1;
-    if (ftruncate(fd, RCX_RPC_BOOT_SIZE) != 0) { close(fd); return -1; }
-    void* v = mmap(nullptr, RCX_RPC_BOOT_SIZE, PROT_READ | PROT_WRITE,
-                   MAP_SHARED, fd, 0);
-    close(fd);
-    if (v == MAP_FAILED) return -1;
-
-    RcxRpcBootHeader* boot = (RcxRpcBootHeader*)v;
-    memset(boot, 0, RCX_RPC_BOOT_SIZE);
-    boot->nonceLength = (uint32_t)strlen(nonce);
-    strncpy(boot->nonce, nonce, 59);
-    munmap(v, RCX_RPC_BOOT_SIZE);
-    return 0;
-#endif
-}
-
 /* Open the main shared memory (read-only, just to monitor payloadReady) */
-static void* open_main_shm(uint32_t pid, const char* nonce)
+static void* open_main_shm(uint32_t pid)
 {
     char shmName[128];
-    rcx_rpc_shm_name(shmName, sizeof(shmName), pid, nonce);
+    rcx_rpc_shm_name(shmName, sizeof(shmName), pid);
 
 #ifdef _WIN32
     HANDLE h = nullptr;
@@ -142,20 +103,13 @@ static uint8_t g_testBuf[65536];
 
 /* ── main ─────────────────────────────────────────────────────────── */
 
-int main(int argc, char** argv)
+int main(int, char**)
 {
-    const char* nonce = (argc > 1) ? argv[1] : "test0001";
     uint32_t pid = current_pid();
 
     /* fill test buffer with known pattern */
     for (int i = 0; i < (int)sizeof(g_testBuf); ++i)
         g_testBuf[i] = (uint8_t)(i & 0xFF);
-
-    /* create bootstrap shm */
-    if (create_bootstrap(pid, nonce) != 0) {
-        fprintf(stderr, "ERROR: failed to create bootstrap shm\n");
-        return 1;
-    }
 
     /* load payload */
     char plPath[1024];
@@ -180,7 +134,7 @@ int main(int argc, char** argv)
 #endif
 
     /* open main shm and wait for payloadReady */
-    void* shmView = open_main_shm(pid, nonce);
+    void* shmView = open_main_shm(pid);
     if (!shmView) {
         fprintf(stderr, "ERROR: failed to open main shared memory\n");
         return 1;
@@ -197,8 +151,8 @@ int main(int argc, char** argv)
     }
 
     /* print READY line for the client to parse */
-    printf("READY pid=%u nonce=%s testbuf=0x%llx testlen=%u\n",
-           pid, nonce,
+    printf("READY pid=%u testbuf=0x%llx testlen=%u\n",
+           pid,
            (unsigned long long)(uintptr_t)g_testBuf,
            (unsigned)sizeof(g_testBuf));
     fflush(stdout);
@@ -210,7 +164,7 @@ int main(int argc, char** argv)
     printf("Payload shut down, exiting.\n");
 
 #ifdef _WIN32
-    /* give the server thread a moment to exit */
+    /* give the timer queue a moment to drain */
     Sleep(200);
     FreeLibrary(hPayload);
     if (shmView) UnmapViewOfFile(shmView);
