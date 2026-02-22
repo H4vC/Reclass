@@ -42,7 +42,7 @@ Built with C++17, Qt 6, and QScintilla. The entire editor surface is rendered as
 
 - **File** — open any binary file and inspect its contents as structured data
 - **Process** — attach to a live process and read its memory in real time
-- **Remote Process** — connect to a process on another machine over shared memory
+- **Remote Process** — read another process's memory via shared memory
 - **WinDbg** — load `.dmp` crash dump files or connect to live debugging sessions
 
 ---
