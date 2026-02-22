@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/RECLASS_LIGHTMODE.svg" height="240">
-  <img src="docs/RECLASS_DARKMODE.svg" alt="Reclass" height="240" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/RECLASS_LIGHTMODE.svg" height="170">
+  <img src="docs/RECLASS_DARKMODE.svg" alt="Reclass" height="170" />
 </picture>
 
 **A structured binary editor for reverse engineering — inspect raw bytes as typed structs, arrays, and pointers.<p>A complete overhaul of the popular "reclassing" tools**
