@@ -1,4 +1,5 @@
 #include "theme.h"
+#include <QtGlobal>
 #include <type_traits>
 
 namespace rcx {
@@ -61,6 +62,15 @@ Theme Theme::fromJson(const QJsonObject& o) {
         t.indHeatWarm = t.indHoverSpan.isValid() ? t.indHoverSpan : t.syntaxString;
     if (!t.indHeatHot.isValid())
         t.indHeatHot = t.markerPtr;
+
+    // Ensure hover is visually distinct from background
+    if (t.hover.isValid() && t.background.isValid()) {
+        int dist = qAbs(t.hover.red() - t.background.red())
+                 + qAbs(t.hover.green() - t.background.green())
+                 + qAbs(t.hover.blue() - t.background.blue());
+        if (dist < 20)
+            t.hover = t.background.lighter(130);
+    }
     return t;
 }
 

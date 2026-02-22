@@ -76,14 +76,16 @@ void TitleBarWidget::applyTheme(const Theme& theme) {
         QStringLiteral("QLabel { color: %1; font-size: 12px; font-weight: bold; }")
             .arg(theme.textDim.name()));
 
-    // Menu bar styling — transparent background, themed text
-    m_menuBar->setStyleSheet(
-        QStringLiteral(
-            "QMenuBar { background: transparent; border: none; }"
-            "QMenuBar::item { background: transparent; color: %1; padding: 8px 8px 4px 8px; }"
-            "QMenuBar::item:selected { background: %2; }"
-            "QMenuBar::item:pressed { background: %2; }")
-            .arg(theme.textDim.name(), theme.hover.name()));
+    // Menu bar palette — hover/bg handled by MenuBarStyle QProxyStyle.
+    // Set Window + Button to background so Fusion never paints a foreign color.
+    {
+        QPalette mbPal = m_menuBar->palette();
+        mbPal.setColor(QPalette::Window, theme.background);
+        mbPal.setColor(QPalette::Button, theme.background);
+        mbPal.setColor(QPalette::ButtonText, theme.textDim);
+        m_menuBar->setPalette(mbPal);
+        m_menuBar->setAutoFillBackground(false);
+    }
 
     // Chrome buttons
     QString btnStyle = QStringLiteral(

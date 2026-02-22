@@ -251,6 +251,9 @@ public:
         // Kill the 1px frame margin Fusion reserves around QMenu contents
         if (metric == PM_MenuPanelWidth)
             return 0;
+        // Kill the separator between dock widgets / central widget
+        if (metric == PM_DockWidgetSeparatorExtent)
+            return 0;
         return QProxyStyle::pixelMetric(metric, opt, w);
     }
     void drawPrimitive(PrimitiveElement elem, const QStyleOption* opt,
@@ -261,18 +264,28 @@ public:
         // Kill the status bar item frame and panel border
         if (elem == PE_FrameStatusBarItem || elem == PE_PanelStatusBar)
             return;
+        // Transparent menu bar background (no CSS needed)
+        if (elem == PE_PanelMenuBar)
+            return;
         QProxyStyle::drawPrimitive(elem, opt, p, w);
     }
     void drawControl(ControlElement element, const QStyleOption* opt,
                      QPainter* p, const QWidget* w) const override {
-        // Menu bar items (File, Edit, View…) — direct paint, Fusion ignores palette
+        // Suppress Fusion's CE_MenuBarEmptyArea — it fills with palette.window()
+        // bypassing PE_PanelMenuBar.  TitleBarWidget paints the background.
+        if (element == CE_MenuBarEmptyArea)
+            return;
+        // Menu bar items (File, Edit, View…) — hover bg + amber text, no CSS
         if (element == CE_MenuBarItem) {
             if (auto* mi = qstyleoption_cast<const QStyleOptionMenuItem*>(opt)) {
                 if (mi->state & (State_Selected | State_Sunken)) {
+                    // Draw hover background
+                    p->fillRect(mi->rect, mi->palette.color(QPalette::Mid));
+                    // Draw text with amber color, no highlight state
                     QStyleOptionMenuItem patched = *mi;
                     patched.state &= ~(State_Selected | State_Sunken);
                     patched.palette.setColor(QPalette::ButtonText,
-                        mi->palette.color(QPalette::Link));          // amber text only
+                        mi->palette.color(QPalette::Link));          // amber text
                     QProxyStyle::drawControl(element, &patched, p, w);
                     return;
                 }
@@ -285,7 +298,7 @@ public:
                     && mi->menuItemType != QStyleOptionMenuItem::Separator) {
                     QStyleOptionMenuItem patched = *mi;
                     patched.palette.setColor(QPalette::Highlight,
-                        mi->palette.color(QPalette::Mid));           // theme.border
+                        mi->palette.color(QPalette::Mid));           // theme.hover
                     patched.palette.setColor(QPalette::HighlightedText,
                         mi->palette.color(QPalette::Link));          // theme.indHoverSpan
                     QProxyStyle::drawControl(element, &patched, p, w);
@@ -1352,8 +1365,7 @@ void MainWindow::toggleMcp() {
 void MainWindow::applyTheme(const Theme& theme) {
     applyGlobalTheme(theme);
 
-    // Kill the 1px separator line between central widget and status bar
-    setStyleSheet("QMainWindow::separator { height: 0px; width: 0px; }");
+    // Separator killed via PM_DockWidgetSeparatorExtent in MenuBarStyle
 
     // Custom title bar
     m_titleBar->applyTheme(theme);
@@ -2280,8 +2292,16 @@ void MainWindow::populateSourceMenu() {
         {QStringLiteral("reclass.netcompatlayer"), QStringLiteral(":/vsicons/plug.svg")},
     };
 
-    m_sourceMenu->addAction(QIcon(QStringLiteral(":/vsicons/file-binary.svg")),
-                            QStringLiteral("File"), this, [this]() {
+    auto addSourceAction = [this](const QString& text, const QIcon& icon, auto&& slot) {
+        auto* act = m_sourceMenu->addAction(icon, text);
+        act->setIconVisibleInMenu(true);
+        connect(act, &QAction::triggered, this, std::forward<decltype(slot)>(slot));
+        return act;
+    };
+
+    addSourceAction(QStringLiteral("File"),
+                    makeIcon(QStringLiteral(":/vsicons/file-binary.svg")),
+                    [this]() {
         if (auto* c = activeController()) c->selectSource(QStringLiteral("File"));
     });
 
@@ -2289,14 +2309,14 @@ void MainWindow::populateSourceMenu() {
     for (const auto& prov : providers) {
         QString name = prov.name;
         auto it = s_providerIcons.constFind(prov.identifier);
-        QIcon icon(it != s_providerIcons.constEnd() ? *it
-                                                     : QStringLiteral(":/vsicons/extensions.svg"));
+        QIcon icon = makeIcon(it != s_providerIcons.constEnd() ? *it
+                              : QStringLiteral(":/vsicons/extensions.svg"));
 
         QString label = prov.dllFileName.isEmpty()
             ? name
             : QStringLiteral("%1  (%2)").arg(name, prov.dllFileName);
 
-        m_sourceMenu->addAction(icon, label, this, [this, name]() {
+        addSourceAction(label, icon, [this, name]() {
             if (auto* c = activeController()) c->selectSource(name);
         });
     }
@@ -2306,18 +2326,20 @@ void MainWindow::populateSourceMenu() {
         for (int i = 0; i < ctrl->savedSources().size(); i++) {
             const auto& e = ctrl->savedSources()[i];
             auto* act = m_sourceMenu->addAction(
-                QStringLiteral("%1 '%2'").arg(e.kind, e.displayName),
-                this, [this, i]() {
-                    if (auto* c = activeController()) c->switchSource(i);
-                });
+                QStringLiteral("%1 '%2'").arg(e.kind, e.displayName));
             act->setCheckable(true);
             act->setChecked(i == ctrl->activeSourceIndex());
+            connect(act, &QAction::triggered, this, [this, i]() {
+                if (auto* c = activeController()) c->switchSource(i);
+            });
         }
         m_sourceMenu->addSeparator();
-        m_sourceMenu->addAction(QIcon(QStringLiteral(":/vsicons/clear-all.svg")),
-                                QStringLiteral("Clear All"), this, [this]() {
+        auto* clearAct = addSourceAction(QStringLiteral("Clear All"),
+                        makeIcon(QStringLiteral(":/vsicons/clear-all.svg")),
+                        [this]() {
             if (auto* c = activeController()) c->clearSources();
         });
+        Q_UNUSED(clearAct);
     }
 }
 
