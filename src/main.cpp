@@ -1,9 +1,11 @@
 #include "mainwindow.h"
 #include "providerregistry.h"
 #include "generator.h"
-#include "import_reclass_xml.h"
-#include "import_source.h"
-#include "export_reclass_xml.h"
+#include "imports/import_reclass_xml.h"
+#include "imports/import_source.h"
+#include "imports/export_reclass_xml.h"
+#include "imports/import_pdb.h"
+#include "imports/import_pdb_dialog.h"
 #include "mcp/mcp_bridge.h"
 #include <QApplication>
 #include <QMainWindow>
@@ -41,6 +43,7 @@
 #include <QDialogButtonBox>
 #include <QVBoxLayout>
 #include <QDialog>
+#include <QProgressDialog>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexercpp.h>
 #include <QProxyStyle>
@@ -431,6 +434,7 @@ void MainWindow::createMenus() {
     Qt5Qt6AddAction(file, "Export ReClass &XML...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::exportReclassXmlAction);
     Qt5Qt6AddAction(file, "Import from &Source...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importFromSource);
     Qt5Qt6AddAction(file, "&Import ReClass XML...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importReclassXml);
+    Qt5Qt6AddAction(file, "Import &PDB...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::importPdb);
     // Examples submenu — scan once at init
     {
         QDir exDir(QCoreApplication::applicationDirPath() + "/examples");
@@ -1802,6 +1806,56 @@ void MainWindow::importFromSource() {
     createTab(doc);
     rebuildWorkspaceModel();
     m_statusLabel->setText(QStringLiteral("Imported %1 classes from source").arg(classCount));
+}
+
+// ── Import PDB ──
+
+void MainWindow::importPdb() {
+    rcx::PdbImportDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    QString pdbPath = dlg.pdbPath();
+    QVector<uint32_t> indices = dlg.selectedTypeIndices();
+    if (indices.isEmpty()) return;
+
+    QProgressDialog progress("Importing types...", "Cancel", 0, indices.size(), this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(200);
+    bool cancelled = false;
+
+    QString error;
+    NodeTree tree = rcx::importPdbSelected(pdbPath, indices, &error,
+        [&](int current, int total) -> bool {
+            progress.setMaximum(total);
+            progress.setValue(current);
+            QApplication::processEvents();
+            if (progress.wasCanceled()) {
+                cancelled = true;
+                return false;
+            }
+            return true;
+        });
+    progress.close();
+
+    if (tree.nodes.isEmpty()) {
+        if (!cancelled)
+            QMessageBox::warning(this, "Import Failed", error.isEmpty()
+                ? QStringLiteral("No types imported") : error);
+        return;
+    }
+
+    int classCount = 0;
+    for (const auto& n : tree.nodes)
+        if (n.parentId == 0 && n.kind == rcx::NodeKind::Struct) classCount++;
+
+    auto* doc = new rcx::RcxDocument(this);
+    doc->tree = std::move(tree);
+
+    m_mdiArea->closeAllSubWindows();
+    createTab(doc);
+    rebuildWorkspaceModel();
+    m_statusLabel->setText(QStringLiteral("Imported %1 classes from %2")
+        .arg(classCount).arg(QFileInfo(pdbPath).fileName()));
 }
 
 // ── Type Aliases Dialog ──

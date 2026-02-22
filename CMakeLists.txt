@@ -31,6 +31,15 @@ endif()
 
 find_package(QScintilla REQUIRED)
 
+# RawPDB — direct PDB file reader (no DIA SDK / msdia140.dll dependency)
+file(GLOB RAW_PDB_SRCS third_party/raw_pdb/src/*.cpp)
+add_library(raw_pdb STATIC ${RAW_PDB_SRCS})
+target_include_directories(raw_pdb PUBLIC third_party/raw_pdb/src)
+target_compile_features(raw_pdb PRIVATE cxx_std_11)
+if(WIN32)
+    target_link_libraries(raw_pdb PRIVATE rpcrt4)
+endif()
+
 add_executable(Reclass
     src/main.cpp
     src/editor.h
@@ -60,12 +69,16 @@ add_executable(Reclass
     src/themes/thememanager.cpp
     src/themes/themeeditor.h
     src/themes/themeeditor.cpp
-    src/import_reclass_xml.h
-    src/import_reclass_xml.cpp
-    src/import_source.h
-    src/import_source.cpp
-    src/export_reclass_xml.h
-    src/export_reclass_xml.cpp
+    src/imports/import_reclass_xml.h
+    src/imports/import_reclass_xml.cpp
+    src/imports/import_source.h
+    src/imports/import_source.cpp
+    src/imports/export_reclass_xml.h
+    src/imports/export_reclass_xml.cpp
+    src/imports/import_pdb.h
+    src/imports/import_pdb.cpp
+    src/imports/import_pdb_dialog.h
+    src/imports/import_pdb_dialog.cpp
     src/mainwindow.h
     src/optionsdialog.h
     src/optionsdialog.cpp
@@ -94,7 +107,7 @@ target_link_libraries(Reclass PRIVATE
     ${_QT_WINEXTRAS}
 )
 if(WIN32)
-    target_link_libraries(Reclass PRIVATE dbghelp dwmapi psapi)
+    target_link_libraries(Reclass PRIVATE dbghelp dwmapi psapi raw_pdb)
 endif()
 
 add_executable(ReclassMcpBridge tools/rcx-mcp-stdio.cpp)
@@ -188,19 +201,19 @@ if(BUILD_TESTING)
     add_test(NAME test_generator COMMAND test_generator)
 
     add_executable(test_import_xml tests/test_import_xml.cpp
-        src/import_reclass_xml.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
+        src/imports/import_reclass_xml.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_import_xml PRIVATE src)
     target_link_libraries(test_import_xml PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_import_xml COMMAND test_import_xml)
 
     add_executable(test_import_source tests/test_import_source.cpp
-        src/import_source.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
+        src/imports/import_source.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_import_source PRIVATE src)
     target_link_libraries(test_import_source PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_import_source COMMAND test_import_source)
 
     add_executable(test_export_xml tests/test_export_xml.cpp
-        src/export_reclass_xml.cpp src/import_reclass_xml.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
+        src/imports/export_reclass_xml.cpp src/imports/import_reclass_xml.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
     target_include_directories(test_export_xml PRIVATE src)
     target_link_libraries(test_export_xml PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_export_xml COMMAND test_export_xml)
@@ -216,6 +229,22 @@ if(BUILD_TESTING)
     target_include_directories(test_addressparser PRIVATE src)
     target_link_libraries(test_addressparser PRIVATE ${QT}::Core ${QT}::Test)
     add_test(NAME test_addressparser COMMAND test_addressparser)
+
+    if(WIN32)
+        add_executable(test_import_pdb tests/test_import_pdb.cpp
+            src/imports/import_pdb.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
+        target_include_directories(test_import_pdb PRIVATE src)
+        target_link_libraries(test_import_pdb PRIVATE
+            ${QT}::Core ${QT}::Test raw_pdb)
+        add_test(NAME test_import_pdb COMMAND test_import_pdb)
+
+        add_executable(bench_import_pdb tests/bench_import_pdb.cpp
+            src/imports/import_pdb.cpp src/format.cpp src/compose.cpp src/addressparser.cpp)
+        target_include_directories(bench_import_pdb PRIVATE src)
+        target_link_libraries(bench_import_pdb PRIVATE
+            ${QT}::Core ${QT}::Test raw_pdb)
+        add_test(NAME bench_import_pdb COMMAND bench_import_pdb)
+    endif()
 
     # ── UI tests (require Qt::Widgets / QScintilla / display — skip on headless CI) ──
     option(BUILD_UI_TESTS "Build tests that require a display (Qt Widgets)" ON)

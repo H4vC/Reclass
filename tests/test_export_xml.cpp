@@ -1,8 +1,8 @@
 #include <QtTest/QtTest>
 #include <QTemporaryFile>
 #include "core.h"
-#include "export_reclass_xml.h"
-#include "import_reclass_xml.h"
+#include "imports/export_reclass_xml.h"
+#include "imports/import_reclass_xml.h"
 
 using namespace rcx;
 

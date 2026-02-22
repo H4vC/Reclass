@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 #include "core.h"
-#include "import_source.h"
+#include "imports/import_source.h"
 
 using namespace rcx;
 

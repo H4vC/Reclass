@@ -53,6 +53,7 @@ private slots:
     void exportReclassXmlAction();
     void importFromSource();
     void importReclassXml();
+    void importPdb();
     void showTypeAliasesDialog();
     void editTheme();
     void showOptionsDialog();

@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 #include "core.h"
-#include "import_reclass_xml.h"
+#include "imports/import_reclass_xml.h"
 
 using namespace rcx;
 
