@@ -17,13 +17,13 @@
 #include <psapi.h>
 
 /* ── globals ──────────────────────────────────────────────────────── */
-static HANDLE  g_hShm        = nullptr;
-static void*   g_mappedView  = nullptr;
-static HANDLE  g_hReqEvent   = nullptr;
-static HANDLE  g_hRspEvent   = nullptr;
-static HANDLE  g_hTimerQueue = nullptr;
-static HANDLE  g_hTimer      = nullptr;
-static volatile LONG g_shutdown = 0;
+static HANDLE  g_hShm          = nullptr;
+static void*   g_mappedView    = nullptr;
+static HANDLE  g_hReqEvent     = nullptr;
+static HANDLE  g_hRspEvent     = nullptr;
+static HANDLE  g_hTimerQueue   = nullptr;
+static HANDLE  g_hPollTimer    = nullptr;
+static volatile LONG g_initialized = 0;
 
 /* ── memory safety via VirtualQuery ────────────────────────────────── */
 
@@ -167,13 +167,17 @@ static void handle_enum_modules(RcxRpcHeader* hdr, uint8_t* data)
     hdr->status        = RCX_RPC_STATUS_OK;
 }
 
-/* ── timer callback (replaces server thread) ─────────────────────── */
+/* forward declaration */
+void RcxPayloadCleanup();
 
-static VOID CALLBACK PollCallback(PVOID, BOOLEAN)
+/* ── timer callback (non-blocking poll) ───────────────────────────── */
+
+static VOID CALLBACK RcxPollTimerCallback(PVOID, BOOLEAN)
 {
-    if (InterlockedCompareExchange(&g_shutdown, 0, 0))
+    if (!g_mappedView || !g_hReqEvent || !g_hRspEvent)
         return;
 
+    /* non-blocking check: is there a pending request? */
     DWORD rc = WaitForSingleObject(g_hReqEvent, 0);
     if (rc != WAIT_OBJECT_0)
         return;
@@ -189,8 +193,8 @@ static VOID CALLBACK PollCallback(PVOID, BOOLEAN)
     case RPC_CMD_ENUM_MODULES: handle_enum_modules(hdr, data); break;
     case RPC_CMD_PING:         break;
     case RPC_CMD_SHUTDOWN:
-        InterlockedExchange(&g_shutdown, 1);
-        break;
+        RcxPayloadCleanup();
+        return;
     default:
         hdr->status = RCX_RPC_STATUS_ERROR;
         break;
@@ -201,86 +205,109 @@ static VOID CALLBACK PollCallback(PVOID, BOOLEAN)
 
 /* ── cleanup ──────────────────────────────────────────────────────── */
 
-static void Cleanup()
+void RcxPayloadCleanup()
 {
-    InterlockedExchange(&g_shutdown, 1);
+    if (!InterlockedCompareExchange(&g_initialized, 0, 0))
+        return;
 
-    if (g_hTimer) {
-        DeleteTimerQueueTimer(g_hTimerQueue, g_hTimer, INVALID_HANDLE_VALUE);
-        g_hTimer = nullptr;
-    }
+    /* stop the poll timer first */
     if (g_hTimerQueue) {
-        DeleteTimerQueueEx(g_hTimerQueue, INVALID_HANDLE_VALUE);
+        DeleteTimerQueueEx(g_hTimerQueue, INVALID_HANDLE_VALUE); /* waits for callbacks */
         g_hTimerQueue = nullptr;
+        g_hPollTimer  = nullptr;
     }
 
+    /* mark not-ready */
     if (g_mappedView) {
         auto* hdr = static_cast<RcxRpcHeader*>(g_mappedView);
         InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 0);
-        UnmapViewOfFile(g_mappedView);
-        g_mappedView = nullptr;
     }
-    if (g_hShm)      { CloseHandle(g_hShm);      g_hShm      = nullptr; }
-    if (g_hReqEvent) { CloseHandle(g_hReqEvent);  g_hReqEvent = nullptr; }
-    if (g_hRspEvent) { CloseHandle(g_hRspEvent);  g_hRspEvent = nullptr; }
+
+    if (g_mappedView) { UnmapViewOfFile(g_mappedView); g_mappedView = nullptr; }
+    if (g_hShm)       { CloseHandle(g_hShm);           g_hShm       = nullptr; }
+    if (g_hReqEvent)  { CloseHandle(g_hReqEvent);      g_hReqEvent  = nullptr; }
+    if (g_hRspEvent)  { CloseHandle(g_hRspEvent);      g_hRspEvent  = nullptr; }
+
+    InterlockedExchange(&g_initialized, 0);
 }
 
-/* ── DllMain ──────────────────────────────────────────────────────── */
+/* ── init (called AFTER DllMain returns — safe for timer queues) ── */
+
+extern "C" __declspec(dllexport)
+bool RcxPayloadInit()
+{
+    if (InterlockedCompareExchange(&g_initialized, 1, 0) != 0)
+        return true;   /* already initialized */
+
+    uint32_t pid = GetCurrentProcessId();
+
+    char shmName[128], reqName[128], rspName[128];
+    rcx_rpc_shm_name(shmName, sizeof(shmName), pid);
+    rcx_rpc_req_name(reqName, sizeof(reqName), pid);
+    rcx_rpc_rsp_name(rspName, sizeof(rspName), pid);
+
+    g_hShm = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr,
+                                PAGE_READWRITE, 0, RCX_RPC_SHM_SIZE, shmName);
+    if (!g_hShm) {
+        InterlockedExchange(&g_initialized, 0);
+        return false;
+    }
+
+    g_mappedView = MapViewOfFile(g_hShm, FILE_MAP_ALL_ACCESS, 0, 0, RCX_RPC_SHM_SIZE);
+    if (!g_mappedView) {
+        CloseHandle(g_hShm); g_hShm = nullptr;
+        InterlockedExchange(&g_initialized, 0);
+        return false;
+    }
+
+    memset(g_mappedView, 0, RCX_RPC_HEADER_SIZE);
+    auto* hdr = static_cast<RcxRpcHeader*>(g_mappedView);
+    hdr->version = RCX_RPC_VERSION;
+
+    /* image base from PEB */
+    {
+        uint64_t peb;
+        asm volatile("mov %%gs:0x60, %0" : "=r"(peb));
+        uint64_t ldr       = *reinterpret_cast<uint64_t*>(peb + 0x18);
+        uint64_t firstLink = *reinterpret_cast<uint64_t*>(ldr + 0x10);
+        hdr->imageBase     = *reinterpret_cast<uint64_t*>(firstLink + 0x30);
+    }
+
+    g_hReqEvent = CreateEventA(nullptr, FALSE, FALSE, reqName);
+    g_hRspEvent = CreateEventA(nullptr, FALSE, FALSE, rspName);
+    if (!g_hReqEvent || !g_hRspEvent) {
+        RcxPayloadCleanup();
+        return false;
+    }
+
+    /* create dedicated timer queue + fast poll timer (10ms interval) */
+    g_hTimerQueue = CreateTimerQueue();
+    if (!g_hTimerQueue) {
+        RcxPayloadCleanup();
+        return false;
+    }
+
+    if (!CreateTimerQueueTimer(&g_hPollTimer, g_hTimerQueue,
+                               RcxPollTimerCallback, nullptr,
+                               0,     /* start immediately */
+                               10,    /* 10ms repeat */
+                               WT_EXECUTEDEFAULT)) {
+        RcxPayloadCleanup();
+        return false;
+    }
+
+    /* mark ready */
+    InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 1);
+    return true;
+}
+
+/* ── DllMain — minimal, no heavy work under loader lock ───────────── */
 
 BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 {
-    if (reason == DLL_PROCESS_ATTACH) {
-        uint32_t pid = GetCurrentProcessId();
-
-        /* ── create main shared memory (PID-only naming) ── */
-        char shmName[128], reqName[128], rspName[128];
-        rcx_rpc_shm_name(shmName, sizeof(shmName), pid);
-        rcx_rpc_req_name(reqName, sizeof(reqName), pid);
-        rcx_rpc_rsp_name(rspName, sizeof(rspName), pid);
-
-        g_hShm = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr,
-                                    PAGE_READWRITE, 0, RCX_RPC_SHM_SIZE, shmName);
-        if (!g_hShm) return TRUE;
-
-        g_mappedView = MapViewOfFile(g_hShm, FILE_MAP_ALL_ACCESS, 0, 0, RCX_RPC_SHM_SIZE);
-        if (!g_mappedView) { CloseHandle(g_hShm); g_hShm = nullptr; return TRUE; }
-
-        memset(g_mappedView, 0, RCX_RPC_HEADER_SIZE);
-        auto* hdr = static_cast<RcxRpcHeader*>(g_mappedView);
-        hdr->version = RCX_RPC_VERSION;
-
-        /* image base from PEB: gs:[0x60] -> PEB, +0x18 -> Ldr, Flink -> first entry, +0x30 -> DllBase */
-        {
-            uint64_t peb;
-            asm volatile("mov %%gs:0x60, %0" : "=r"(peb));
-            uint64_t ldr       = *reinterpret_cast<uint64_t*>(peb + 0x18);
-            uint64_t firstLink = *reinterpret_cast<uint64_t*>(ldr + 0x10);
-            hdr->imageBase     = *reinterpret_cast<uint64_t*>(firstLink + 0x30);
-        }
-
-        /* ── create events ── */
-        g_hReqEvent = CreateEventA(nullptr, FALSE, FALSE, reqName);
-        g_hRspEvent = CreateEventA(nullptr, FALSE, FALSE, rspName);
-        if (!g_hReqEvent || !g_hRspEvent) { Cleanup(); return TRUE; }
-
-        /* ── start timer queue (10ms poll interval) ── */
-        g_hTimerQueue = CreateTimerQueue();
-        if (!g_hTimerQueue) { Cleanup(); return TRUE; }
-
-        if (!CreateTimerQueueTimer(&g_hTimer, g_hTimerQueue,
-                                   PollCallback, nullptr, 0, 10,
-                                   WT_EXECUTEDEFAULT)) {
-            Cleanup();
-            return TRUE;
-        }
-
-        /* signal readiness */
-        InterlockedExchange(reinterpret_cast<volatile LONG*>(&hdr->payloadReady), 1);
+    if (reason == DLL_PROCESS_DETACH) {
+        RcxPayloadCleanup();
     }
-    else if (reason == DLL_PROCESS_DETACH) {
-        Cleanup();
-    }
-
     return TRUE;
 }
 

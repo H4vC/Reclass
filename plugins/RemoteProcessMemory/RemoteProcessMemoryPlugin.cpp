@@ -400,7 +400,7 @@ static bool injectPayload(uint32_t pid, QString* errorMsg)
 
     WriteProcessMemory(hProc, remotePath, pathUtf8.constData(), pathLen, nullptr);
 
-    /* create remote thread calling LoadLibraryA(path) */
+    /* Step 1: LoadLibraryA — loads the DLL (DllMain is minimal) */
     HMODULE hK32 = GetModuleHandleA("kernel32.dll");
     auto pLoadLib = reinterpret_cast<LPTHREAD_START_ROUTINE>(
         GetProcAddress(hK32, "LoadLibraryA"));
@@ -417,19 +417,81 @@ static bool injectPayload(uint32_t pid, QString* errorMsg)
 
     WaitForSingleObject(hThread, 10000);
 
-    /* check if LoadLibrary returned non-null */
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
     CloseHandle(hThread);
 
     VirtualFreeEx(hProc, remotePath, 0, MEM_RELEASE);
-    CloseHandle(hProc);
 
     if (exitCode == 0) {
+        CloseHandle(hProc);
         if (errorMsg) *errorMsg = QStringLiteral("LoadLibrary returned NULL in target.\n"
                                                   "Ensure rcx_payload.dll is in: %1").arg(path);
         return false;
     }
+
+    /* Step 2: Call RcxPayloadInit() — safe to create timer queues now
+       (loader lock is no longer held after LoadLibrary returned) */
+    HMODULE hPayloadRemote = (HMODULE)(uintptr_t)exitCode;
+    auto pGetProcAddr = reinterpret_cast<FARPROC(WINAPI*)(HMODULE, LPCSTR)>(
+        GetProcAddress(hK32, "GetProcAddress"));
+
+    /* Write "RcxPayloadInit\0" into target, call GetProcAddress remotely */
+    const char initName[] = "RcxPayloadInit";
+    void* remoteInitName = VirtualAllocEx(hProc, nullptr, sizeof(initName),
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (remoteInitName) {
+        WriteProcessMemory(hProc, remoteInitName, initName, sizeof(initName), nullptr);
+
+        /* We need to call GetProcAddress(hPayload, "RcxPayloadInit") then call the result.
+           Simpler approach: write small shellcode that does both calls. */
+        uint8_t shellcode[128];
+        int off = 0;
+
+        /* sub rsp, 40                   ; shadow space + alignment */
+        shellcode[off++] = 0x48; shellcode[off++] = 0x83; shellcode[off++] = 0xEC; shellcode[off++] = 0x28;
+        /* mov rcx, hPayloadRemote       ; first arg = module handle */
+        shellcode[off++] = 0x48; shellcode[off++] = 0xB9;
+        uint64_t hMod = (uint64_t)(uintptr_t)hPayloadRemote;
+        memcpy(shellcode + off, &hMod, 8); off += 8;
+        /* mov rdx, remoteInitName       ; second arg = "RcxPayloadInit" */
+        shellcode[off++] = 0x48; shellcode[off++] = 0xBA;
+        uint64_t pName = (uint64_t)(uintptr_t)remoteInitName;
+        memcpy(shellcode + off, &pName, 8); off += 8;
+        /* mov rax, GetProcAddress       */
+        shellcode[off++] = 0x48; shellcode[off++] = 0xB8;
+        uint64_t pGPA = (uint64_t)(uintptr_t)pGetProcAddr;
+        memcpy(shellcode + off, &pGPA, 8); off += 8;
+        /* call rax                      ; rax = RcxPayloadInit */
+        shellcode[off++] = 0xFF; shellcode[off++] = 0xD0;
+        /* test rax, rax */
+        shellcode[off++] = 0x48; shellcode[off++] = 0x85; shellcode[off++] = 0xC0;
+        /* jz skip (jump over the call if null) */
+        shellcode[off++] = 0x74; shellcode[off++] = 0x02;
+        /* call rax                      ; RcxPayloadInit() */
+        shellcode[off++] = 0xFF; shellcode[off++] = 0xD0;
+        /* skip: add rsp, 40 */
+        shellcode[off++] = 0x48; shellcode[off++] = 0x83; shellcode[off++] = 0xC4; shellcode[off++] = 0x28;
+        /* ret */
+        shellcode[off++] = 0xC3;
+
+        void* remoteCode = VirtualAllocEx(hProc, nullptr, (SIZE_T)off,
+                                          MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (remoteCode) {
+            WriteProcessMemory(hProc, remoteCode, shellcode, (SIZE_T)off, nullptr);
+
+            HANDLE hThread2 = CreateRemoteThread(hProc, nullptr, 0,
+                (LPTHREAD_START_ROUTINE)remoteCode, nullptr, 0, nullptr);
+            if (hThread2) {
+                WaitForSingleObject(hThread2, 10000);
+                CloseHandle(hThread2);
+            }
+            VirtualFreeEx(hProc, remoteCode, 0, MEM_RELEASE);
+        }
+        VirtualFreeEx(hProc, remoteInitName, 0, MEM_RELEASE);
+    }
+
+    CloseHandle(hProc);
     return true;
 }
 

@@ -125,6 +125,15 @@ int main(int, char**)
                 plPath, GetLastError());
         return 1;
     }
+
+    /* Call RcxPayloadInit() — DllMain is minimal, init must be explicit */
+    typedef bool (*RcxPayloadInitFn)();
+    auto pfnInit = (RcxPayloadInitFn)GetProcAddress(hPayload, "RcxPayloadInit");
+    if (!pfnInit || !pfnInit()) {
+        fprintf(stderr, "ERROR: RcxPayloadInit() failed or not found\n");
+        FreeLibrary(hPayload);
+        return 1;
+    }
 #else
     void* hPayload = dlopen(plPath, RTLD_NOW);
     if (!hPayload) {
