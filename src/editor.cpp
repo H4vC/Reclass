@@ -909,7 +909,7 @@ void RcxEditor::reformatMargins() {
         // Place offset in the parent's indent slot (one level above the field's own indent)
         // so the field's own 3-char indent acts as visual separator from the type column
         int col = kFoldCol + (lm.depth - 2) * 3;
-        int slotWidth = 3;
+        int slotWidth = 5;
 
         auto pos = [&](int c) -> long {
             return m_sci->SendScintilla(QsciScintillaBase::SCI_FINDCOLUMN,
@@ -1756,8 +1756,8 @@ bool RcxEditor::eventFilter(QObject* obj, QEvent* event) {
         }
 
         commitInlineEdit();
-        m_currentSelIds.clear();   // stale — normal handler will re-establish
-        // Fall through to normal click handler below
+        m_currentSelIds.clear();
+        return true;  // consume — metadata was recomposed; stale coords unsafe
     }
     // Single-click on fold column (" - " / " + ") toggles fold
     // Other left-clicks emit nodeClicked for selection

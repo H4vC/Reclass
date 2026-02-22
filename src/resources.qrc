@@ -51,5 +51,9 @@
         <file alias="chevron-down.svg">vsicons/chevron-down.svg</file>
         <file alias="folder.svg">vsicons/folder.svg</file>
         <file alias="symbol-enum.svg">vsicons/symbol-enum.svg</file>
+        <file alias="server-process.svg">vsicons/server-process.svg</file>
+        <file alias="remote.svg">vsicons/remote.svg</file>
+        <file alias="plug.svg">vsicons/plug.svg</file>
+        <file alias="clear-all.svg">vsicons/clear-all.svg</file>
     </qresource>
 </RCC>

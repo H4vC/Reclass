@@ -25,10 +25,13 @@ public:
         IProviderPlugin* plugin;  // Plugin (if plugin-based)
         BuiltinFactory factory;   // Factory (if built-in)
         bool isBuiltin;
-        
-        ProviderInfo(const QString& n, const QString& id, IProviderPlugin* p)
-            : name(n), identifier(id), plugin(p), factory(nullptr), isBuiltin(false) {}
-        
+        QString dllFileName;   // Original DLL/SO filename (plugin-based only)
+
+        ProviderInfo(const QString& n, const QString& id, IProviderPlugin* p,
+                     const QString& dll = {})
+            : name(n), identifier(id), plugin(p), factory(nullptr),
+              isBuiltin(false), dllFileName(dll) {}
+
         ProviderInfo(const QString& n, const QString& id, BuiltinFactory f)
             : name(n), identifier(id), plugin(nullptr), factory(f), isBuiltin(true) {}
     };
@@ -36,7 +39,8 @@ public:
     static ProviderRegistry& instance();
     
     // Register a plugin-based provider
-    void registerProvider(const QString& name, const QString& identifier, IProviderPlugin* plugin);
+    void registerProvider(const QString& name, const QString& identifier, IProviderPlugin* plugin,
+                          const QString& dllFileName = {});
     
     // Register a built-in provider with a factory function
     void registerBuiltinProvider(const QString& name, const QString& identifier, BuiltinFactory factory);

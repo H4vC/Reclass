@@ -97,6 +97,53 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
 #endif
     fflush(stderr);
 
+    // Phase 1.5: write a full minidump next to the executable
+    {
+        // Build dump path: <exe_dir>/reclass_crash_<YYYYMMDD_HHMMSS>.dmp
+        wchar_t exePath[MAX_PATH] = {};
+        GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        // Strip exe filename to get directory
+        wchar_t* lastSlash = wcsrchr(exePath, L'\\');
+        if (lastSlash) *(lastSlash + 1) = L'\0';
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wchar_t dumpPath[MAX_PATH];
+        _snwprintf(dumpPath, MAX_PATH,
+                   L"%sreclass_crash_%04d%02d%02d_%02d%02d%02d.dmp",
+                   exePath, st.wYear, st.wMonth, st.wDay,
+                   st.wHour, st.wMinute, st.wSecond);
+
+        HANDLE hFile = CreateFileW(dumpPath, GENERIC_WRITE, 0, NULL,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION mei;
+            mei.ThreadId          = GetCurrentThreadId();
+            mei.ExceptionPointers = ep;
+            mei.ClientPointers    = FALSE;
+
+            // MiniDumpWithFullMemory: captures entire process address space
+            // so we can inspect all heap objects, Qt state, node trees, etc.
+            BOOL ok = MiniDumpWriteDump(
+                GetCurrentProcess(), GetCurrentProcessId(), hFile,
+                static_cast<MINIDUMP_TYPE>(MiniDumpWithFullMemory
+                                          | MiniDumpWithHandleData
+                                          | MiniDumpWithThreadInfo
+                                          | MiniDumpWithUnloadedModules),
+                &mei, NULL, NULL);
+            CloseHandle(hFile);
+
+            if (ok) {
+                fprintf(stderr, "Dump : %ls\n", dumpPath);
+            } else {
+                fprintf(stderr, "Dump : FAILED (error %lu)\n", GetLastError());
+            }
+        } else {
+            fprintf(stderr, "Dump : could not create file (error %lu)\n", GetLastError());
+        }
+        fflush(stderr);
+    }
+
     // Phase 2: attempt symbol resolution + stack walk
     // Copy context so StackWalk64 can mutate it safely
     CONTEXT ctxCopy = *ep->ContextRecord;
@@ -689,9 +736,11 @@ private:
         label->setGeometry(tw + 1 + gutter, 0,
                            qMax(0, width() - (tw + 1 + gutter)), h);
 
-        // Shared baseline so tab text and status text align
+        // Shared baseline so tab text and status text align.
+        // Nudge up by half the accent-line height so text centres
+        // in the visible area below the accent bar, not in the full bar.
         QFontMetrics fm(font());
-        int by = (h + fm.ascent()) / 2;
+        int by = (h + fm.ascent()) / 2 - (ViewTabButton::kAccentH + 1) / 2;
 
         // Push baseline to buttons
         auto* lay = tabRow->layout();
@@ -1136,6 +1185,7 @@ void MainWindow::selfTest() {
     // Attach process memory to self — provider base will be set to the editor address
     DWORD pid = GetCurrentProcessId();
     QString target = QString("%1:Reclass.exe").arg(pid);
+
     ctrl->attachViaPlugin(QStringLiteral("processmemory"), target);
 #else
     project_new();
@@ -2222,14 +2272,31 @@ void MainWindow::populateSourceMenu() {
     m_sourceMenu->clear();
     auto* ctrl = activeController();
 
-    m_sourceMenu->addAction("File", this, [this]() {
+    // Icon map for known provider identifiers
+    static const QHash<QString, QString> s_providerIcons = {
+        {QStringLiteral("processmemory"),          QStringLiteral(":/vsicons/server-process.svg")},
+        {QStringLiteral("remoteprocessmemory"),    QStringLiteral(":/vsicons/remote.svg")},
+        {QStringLiteral("windbgmemory"),           QStringLiteral(":/vsicons/debug.svg")},
+        {QStringLiteral("reclass.netcompatlayer"), QStringLiteral(":/vsicons/plug.svg")},
+    };
+
+    m_sourceMenu->addAction(QIcon(QStringLiteral(":/vsicons/file-binary.svg")),
+                            QStringLiteral("File"), this, [this]() {
         if (auto* c = activeController()) c->selectSource(QStringLiteral("File"));
     });
 
     const auto& providers = ProviderRegistry::instance().providers();
     for (const auto& prov : providers) {
         QString name = prov.name;
-        m_sourceMenu->addAction(name, this, [this, name]() {
+        auto it = s_providerIcons.constFind(prov.identifier);
+        QIcon icon(it != s_providerIcons.constEnd() ? *it
+                                                     : QStringLiteral(":/vsicons/extensions.svg"));
+
+        QString label = prov.dllFileName.isEmpty()
+            ? name
+            : QStringLiteral("%1  (%2)").arg(name, prov.dllFileName);
+
+        m_sourceMenu->addAction(icon, label, this, [this, name]() {
             if (auto* c = activeController()) c->selectSource(name);
         });
     }
@@ -2247,7 +2314,8 @@ void MainWindow::populateSourceMenu() {
             act->setChecked(i == ctrl->activeSourceIndex());
         }
         m_sourceMenu->addSeparator();
-        m_sourceMenu->addAction("Clear All", this, [this]() {
+        m_sourceMenu->addAction(QIcon(QStringLiteral(":/vsicons/clear-all.svg")),
+                                QStringLiteral("Clear All"), this, [this]() {
             if (auto* c = activeController()) c->clearSources();
         });
     }

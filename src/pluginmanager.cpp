@@ -92,7 +92,8 @@ bool PluginManager::LoadPlugin(const QString& path)
         IProviderPlugin* provider = static_cast<IProviderPlugin*>(plugin);
         QString name = QString::fromStdString(plugin->Name());
         QString identifier = name.toLower().replace(" ", "");
-        ProviderRegistry::instance().registerProvider(name, identifier, provider);
+        QString dllFileName = QFileInfo(path).fileName();
+        ProviderRegistry::instance().registerProvider(name, identifier, provider, dllFileName);
     }
     
     return true;

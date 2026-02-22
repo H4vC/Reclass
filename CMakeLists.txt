@@ -397,6 +397,7 @@ if(BUILD_TESTING)
     endif() # BUILD_UI_TESTS
 endif()
 add_subdirectory(plugins/ProcessMemory)
+add_subdirectory(plugins/RemoteProcessMemory)
 if(WIN32)
     add_subdirectory(plugins/WinDbgMemory)
     add_subdirectory(plugins/RcNetPluginCompatLayer)

@@ -6,7 +6,8 @@ ProviderRegistry& ProviderRegistry::instance() {
     return s_instance;
 }
 
-void ProviderRegistry::registerProvider(const QString& name, const QString& identifier, IProviderPlugin* plugin) {
+void ProviderRegistry::registerProvider(const QString& name, const QString& identifier,
+                                        IProviderPlugin* plugin, const QString& dllFileName) {
     // Check if already registered
     for (const auto& info : m_providers) {
         if (info.identifier == identifier) {
@@ -14,8 +15,8 @@ void ProviderRegistry::registerProvider(const QString& name, const QString& iden
             return;
         }
     }
-    
-    m_providers.append(ProviderInfo(name, identifier, plugin));
+
+    m_providers.append(ProviderInfo(name, identifier, plugin, dllFileName));
     qDebug() << "ProviderRegistry: Registered plugin provider:" << name << "(" << identifier << ")";
 }
 

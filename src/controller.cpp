@@ -2302,8 +2302,7 @@ void RcxController::attachViaPlugin(const QString& providerIdentifier, const QSt
     m_doc->undoStack.clear();
     m_doc->provider = std::move(provider);
     m_doc->dataPath.clear();
-    if (m_doc->tree.baseAddress == 0)
-        m_doc->tree.baseAddress = newBase;
+    m_doc->tree.baseAddress = (newBase != 0) ? newBase : m_doc->tree.baseAddress;
 
     // Re-evaluate stored formula against the new provider
     if (!m_doc->tree.baseAddressFormula.isEmpty()) {
@@ -2352,6 +2351,9 @@ void RcxController::switchToSavedSource(int idx) {
         // Restore formula before attach so it can be re-evaluated against the new provider
         m_doc->tree.baseAddressFormula = entry.baseAddressFormula;
         attachViaPlugin(entry.kind, entry.providerTarget);
+        // Restore saved base address (user may have navigated away from provider default)
+        if (entry.baseAddress != 0 && entry.baseAddressFormula.isEmpty())
+            m_doc->tree.baseAddress = entry.baseAddress;
     }
 }
 
@@ -2421,8 +2423,7 @@ void RcxController::selectSource(const QString& text) {
                     m_doc->undoStack.clear();
                     m_doc->provider = std::move(provider);
                     m_doc->dataPath.clear();
-                    if (m_doc->tree.baseAddress == 0)
-                        m_doc->tree.baseAddress = newBase;
+                    m_doc->tree.baseAddress = (newBase != 0) ? newBase : m_doc->tree.baseAddress;
                     resetSnapshot();
                     emit m_doc->documentChanged();
 
