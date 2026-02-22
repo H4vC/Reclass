@@ -275,20 +275,26 @@ public:
         // bypassing PE_PanelMenuBar.  TitleBarWidget paints the background.
         if (element == CE_MenuBarEmptyArea)
             return;
-        // Menu bar items (File, Edit, View…) — hover bg + amber text, no CSS
+        // Menu bar items — fully owned painting (Fusion fills full rect, hiding border)
         if (element == CE_MenuBarItem) {
             if (auto* mi = qstyleoption_cast<const QStyleOptionMenuItem*>(opt)) {
-                if (mi->state & (State_Selected | State_Sunken)) {
-                    // Draw hover background
-                    p->fillRect(mi->rect, mi->palette.color(QPalette::Mid));
-                    // Draw text with amber color, no highlight state
-                    QStyleOptionMenuItem patched = *mi;
-                    patched.state &= ~(State_Selected | State_Sunken);
-                    patched.palette.setColor(QPalette::ButtonText,
-                        mi->palette.color(QPalette::Link));          // amber text
-                    QProxyStyle::drawControl(element, &patched, p, w);
-                    return;
-                }
+                QRect area = mi->rect.adjusted(0, 0, 0, -1); // leave 1px for border
+                bool selected = mi->state & State_Selected;
+                bool sunken   = mi->state & State_Sunken;
+
+                // Only fill background for hover/pressed — non-hovered stays
+                // transparent so the parent's border line shows through.
+                if (sunken)
+                    p->fillRect(area, mi->palette.color(QPalette::Mid).darker(130));
+                else if (selected)
+                    p->fillRect(area, mi->palette.color(QPalette::Mid));
+
+                QColor fg = (selected || sunken)
+                    ? mi->palette.color(QPalette::Link)
+                    : mi->palette.color(QPalette::ButtonText);
+                p->setPen(fg);
+                p->drawText(area, Qt::AlignCenter | Qt::TextShowMnemonic, mi->text);
+                return; // never delegate to Fusion
             }
         }
         // Popup menu items — palette patch then delegate to Fusion
