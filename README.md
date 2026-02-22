@@ -1,6 +1,6 @@
 <div align="center">
 
-# ReclassX
+# Reclass
 
 **A structured binary editor for reverse engineering — inspect raw bytes as typed structs, arrays, and pointers.<p>A complete overhaul of the popular "reclassing" tools**
 
@@ -15,7 +15,7 @@
 
 ---
 
-ReclassX helps you inspect raw bytes and interpret them as types (structs, arrays, primitives, pointers, padding) instead of just hex. It is essentially a debugging tool for figuring out unknown data structures — either at runtime from a live process, or from a static source like a binary file or crash dump.
+Reclass helps you inspect raw bytes and interpret them as types (structs, arrays, primitives, pointers, padding) instead of just hex. It is essentially a debugging tool for figuring out unknown data structures — either at runtime from a live process, or from a static source like a binary file or crash dump.
 
 Built with C++17, Qt 6, and QScintilla. The entire editor surface is rendered as formatted plain text with inline editing, fold markers, and hex/ASCII previews.
 
