@@ -105,6 +105,13 @@ static inline uint64_t resolveAddr(const ComposeState& state,
     return state.absOffsets[nodeIdx];
 }
 
+
+static const QVector<int>& childIndices(const ComposeState& state, uint64_t parentId) {
+    static const QVector<int> kEmpty;
+    auto it = state.childMap.constFind(parentId);
+    return it == state.childMap.constEnd() ? kEmpty : it.value();
+}
+
 void composeLeaf(ComposeState& state, const NodeTree& tree,
                  const Provider& prov, int nodeIdx,
                  int depth, uint64_t absAddr, uint64_t scopeId) {
@@ -327,10 +334,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
             return;
         }
 
-        QVector<int> children = state.childMap.value(node.id);
-        std::sort(children.begin(), children.end(), [&](int a, int b) {
-            return tree.nodes[a].offset < tree.nodes[b].offset;
-        });
+        const QVector<int>& children = childIndices(state, node.id);
 
         int childDepth = depth + 1;
 
@@ -399,10 +403,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         if (node.kind == NodeKind::Struct && children.isEmpty() && node.refId != 0) {
             int refIdx = tree.indexOfId(node.refId);
             if (refIdx >= 0) {
-                QVector<int> refChildren = state.childMap.value(node.refId);
-                std::sort(refChildren.begin(), refChildren.end(), [&](int a, int b) {
-                    return tree.nodes[a].offset < tree.nodes[b].offset;
-                });
+                const QVector<int>& refChildren = childIndices(state, node.refId);
                 // Use the referenced struct's scope widths (children come from there)
                 uint64_t refScopeId = node.refId;
                 for (int childIdx : refChildren) {
@@ -493,7 +494,7 @@ void composeNode(ComposeState& state, const NodeTree& tree,
         QString ptrTypeOverride = fmt::pointerTypeName(node.kind, ptrTargetName);
 
         // Check if this pointer has materialized children (from materializeRefChildren)
-        QVector<int> ptrChildren = state.childMap.value(node.id);
+        const QVector<int>& ptrChildren = childIndices(state, node.id);
         bool hasMaterialized = !ptrChildren.isEmpty();
 
         // Force collapsed if this refId is already being virtually expanded
@@ -559,9 +560,6 @@ void composeNode(ComposeState& state, const NodeTree& tree,
                 // Render materialized children at the pointer target address.
                 // These are real tree nodes with independent state — use rootId
                 // so resolveAddr computes offsets relative to the pointer target.
-                std::sort(ptrChildren.begin(), ptrChildren.end(), [&](int a, int b) {
-                    return tree.nodes[a].offset < tree.nodes[b].offset;
-                });
                 for (int childIdx : ptrChildren) {
                     composeNode(state, tree, childProv, childIdx, depth + 1,
                                 pBase, node.id, false, node.id);
@@ -629,6 +627,13 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
     // Precompute parent→children map
     for (int i = 0; i < tree.nodes.size(); i++)
         state.childMap[tree.nodes[i].parentId].append(i);
+
+    for (auto it = state.childMap.begin(); it != state.childMap.end(); ++it) {
+        QVector<int>& children = it.value();
+        std::sort(children.begin(), children.end(), [&](int a, int b) {
+            return tree.nodes[a].offset < tree.nodes[b].offset;
+        });
+    }
 
     // Precompute absolute offsets (baseAddress + structure-relative offset)
     state.absOffsets.resize(tree.nodes.size());
@@ -754,10 +759,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
         state.emitLine(cmdRowText, lm);
     }
 
-    QVector<int> roots = state.childMap.value(0);
-    std::sort(roots.begin(), roots.end(), [&](int a, int b) {
-        return tree.nodes[a].offset < tree.nodes[b].offset;
-    });
+    const QVector<int>& roots = childIndices(state, 0);
 
     for (int idx : roots) {
         // If viewRootId is set, skip roots that don't match

@@ -232,11 +232,16 @@ struct PdbCtx {
     NodeTree tree;
     const TypeTable* tt = nullptr;
     QHash<uint32_t, uint64_t> typeCache; // typeIndex → nodeId
+    QHash<QString, uint32_t> structDefByName; // struct/class definition name → typeIndex
+    QHash<QString, uint32_t> unionDefByName;  // union definition name → typeIndex
+    bool udtDefIndexBuilt = false;
 
     uint64_t importUDT(uint32_t typeIndex);
     uint64_t importEnum(uint32_t typeIndex);
     void importFieldList(uint32_t fieldListIndex, uint64_t parentId);
     void importMemberType(uint32_t typeIndex, int offset, const QString& name, uint64_t parentId);
+    void buildUdtDefinitionIndex();
+    uint32_t findUdtDefinitionIndex(TRK kind, const char* typeName);
 
     // Resolve LF_MODIFIER chain to underlying type index
     uint32_t unwrapModifier(uint32_t typeIndex) const {
@@ -248,6 +253,56 @@ struct PdbCtx {
         return typeIndex;
     }
 };
+
+void PdbCtx::buildUdtDefinitionIndex() {
+    if (udtDefIndexBuilt || !tt) return;
+    udtDefIndexBuilt = true;
+
+    for (uint32_t ti = tt->firstIndex(); ti < tt->lastIndex(); ti++) {
+        const auto* rec = tt->get(ti);
+        if (!rec) continue;
+
+        bool isUnion = false;
+        bool isFwd = false;
+        const char* candidateName = nullptr;
+
+        if (rec->header.kind == TRK::LF_UNION) {
+            isUnion = true;
+            isFwd = rec->data.LF_UNION.property.fwdref;
+            candidateName = leafName(rec->data.LF_UNION.data, unionLeafKind(rec->data.LF_UNION.data));
+        } else if (rec->header.kind == TRK::LF_STRUCTURE || rec->header.kind == TRK::LF_CLASS) {
+            isFwd = rec->data.LF_CLASS.property.fwdref;
+            candidateName = leafName(rec->data.LF_CLASS.data, rec->data.LF_CLASS.lfEasy.kind);
+        } else {
+            continue;
+        }
+
+        if (isFwd || !candidateName || candidateName[0] == '\0') continue;
+
+        QString qname = QString::fromUtf8(candidateName);
+        QHash<QString, uint32_t>& lookup = isUnion ? unionDefByName : structDefByName;
+        if (!lookup.contains(qname)) lookup.insert(qname, ti);
+    }
+}
+
+uint32_t PdbCtx::findUdtDefinitionIndex(TRK kind, const char* typeName) {
+    if (!typeName || typeName[0] == '\0') return 0;
+
+    buildUdtDefinitionIndex();
+
+    const QString qname = QString::fromUtf8(typeName);
+    if (kind == TRK::LF_UNION) {
+        auto it = unionDefByName.constFind(qname);
+        return (it != unionDefByName.cend()) ? it.value() : 0;
+    }
+
+    if (kind == TRK::LF_STRUCTURE || kind == TRK::LF_CLASS) {
+        auto it = structDefByName.constFind(qname);
+        return (it != structDefByName.cend()) ? it.value() : 0;
+    }
+
+    return 0;
+}
 
 uint64_t PdbCtx::importUDT(uint32_t typeIndex) {
     if (typeIndex < tt->firstIndex()) return 0;
@@ -576,7 +631,6 @@ void PdbCtx::importMemberType(uint32_t typeIndex, int offset, const QString& nam
                         isFwd = pointeeRec->data.LF_CLASS.property.fwdref;
 
                     if (isFwd) {
-                        // Need to find the non-fwdref definition by name
                         const char* typeName = nullptr;
                         if (pointeeRec->header.kind == TRK::LF_UNION)
                             typeName = leafName(pointeeRec->data.LF_UNION.data, unionLeafKind(pointeeRec->data.LF_UNION.data));
@@ -584,28 +638,8 @@ void PdbCtx::importMemberType(uint32_t typeIndex, int offset, const QString& nam
                             typeName = leafName(pointeeRec->data.LF_CLASS.data,
                                                pointeeRec->data.LF_CLASS.lfEasy.kind);
 
-                        if (typeName) {
-                            // Linear scan for the definition (cached after first import)
-                            for (uint32_t ti = tt->firstIndex(); ti < tt->lastIndex(); ti++) {
-                                const auto* candidate = tt->get(ti);
-                                if (!candidate) continue;
-                                if (candidate->header.kind != pointeeRec->header.kind) continue;
-                                bool candidateFwd;
-                                const char* candidateName;
-                                if (candidate->header.kind == TRK::LF_UNION) {
-                                    candidateFwd = candidate->data.LF_UNION.property.fwdref;
-                                    candidateName = leafName(candidate->data.LF_UNION.data, unionLeafKind(candidate->data.LF_UNION.data));
-                                } else {
-                                    candidateFwd = candidate->data.LF_CLASS.property.fwdref;
-                                    candidateName = leafName(candidate->data.LF_CLASS.data,
-                                                             candidate->data.LF_CLASS.lfEasy.kind);
-                                }
-                                if (!candidateFwd && candidateName && strcmp(candidateName, typeName) == 0) {
-                                    defIndex = ti;
-                                    break;
-                                }
-                            }
-                        }
+                        uint32_t resolved = findUdtDefinitionIndex(pointeeRec->header.kind, typeName);
+                        if (resolved != 0) defIndex = resolved;
                     }
                     n.refId = importUDT(defIndex);
                 } else if (pointeeRec->header.kind == TRK::LF_PROCEDURE ||
@@ -638,27 +672,8 @@ void PdbCtx::importMemberType(uint32_t typeIndex, int offset, const QString& nam
             else
                 typeName = leafName(rec->data.LF_CLASS.data, rec->data.LF_CLASS.lfEasy.kind);
 
-            if (typeName) {
-                for (uint32_t ti = tt->firstIndex(); ti < tt->lastIndex(); ti++) {
-                    const auto* candidate = tt->get(ti);
-                    if (!candidate) continue;
-                    if (candidate->header.kind != rec->header.kind) continue;
-                    bool candidateFwd;
-                    const char* candidateName;
-                    if (candidate->header.kind == TRK::LF_UNION) {
-                        candidateFwd = candidate->data.LF_UNION.property.fwdref;
-                        candidateName = leafName(candidate->data.LF_UNION.data, unionLeafKind(candidate->data.LF_UNION.data));
-                    } else {
-                        candidateFwd = candidate->data.LF_CLASS.property.fwdref;
-                        candidateName = leafName(candidate->data.LF_CLASS.data,
-                                                 candidate->data.LF_CLASS.lfEasy.kind);
-                    }
-                    if (!candidateFwd && candidateName && strcmp(candidateName, typeName) == 0) {
-                        defIndex = ti;
-                        break;
-                    }
-                }
-            }
+            uint32_t resolved = findUdtDefinitionIndex(rec->header.kind, typeName);
+            if (resolved != 0) defIndex = resolved;
         }
 
         uint64_t refId = importUDT(defIndex);

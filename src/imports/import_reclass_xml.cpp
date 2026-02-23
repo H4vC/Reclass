@@ -371,7 +371,6 @@ NodeTree importReclassXml(const QString& filePath, QString* errorMsg) {
         auto it = classIds.find(ref.className);
         if (it != classIds.end()) {
             tree.nodes[nodeIdx].refId = it.value();
-            tree.invalidateIdCache();
             resolved++;
         } else {
             qDebug() << "[ImportXML] Unresolved ref:" << ref.className << "for node" << ref.nodeId;
