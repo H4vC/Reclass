@@ -1056,7 +1056,6 @@ NodeTree importFromSource(const QString& sourceCode, QString* errorMsg) {
         auto it = classIds.find(ref.className);
         if (it != classIds.end()) {
             tree.nodes[nodeIdx].refId = it.value();
-            tree.invalidateIdCache();
         }
     }
 
