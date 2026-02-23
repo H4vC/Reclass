@@ -569,9 +569,9 @@ void RcxController::refresh() {
     // Prune stale selections (nodes removed by undo/redo/delete)
     QSet<uint64_t> valid;
     for (uint64_t id : m_selIds) {
-        uint64_t nodeId = id & ~kFooterIdBit;  // Strip footer bit for lookup
+        uint64_t nodeId = id & ~(kFooterIdBit | kArrayElemBit | kArrayElemMask);
         if (m_doc->tree.indexOfId(nodeId) >= 0)
-            valid.insert(id);  // Keep original ID (with footer bit if present)
+            valid.insert(id);  // Keep original ID (with footer/array bits if present)
     }
     m_selIds = valid;
 
@@ -1583,13 +1583,35 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
 
     // ── Always-available actions ──
 
-    menu.addAction(icon("diff-added.svg"), "Append 128 bytes", [this]() {
+    menu.addAction(icon("diff-added.svg"), "Append bytes...", [this, &menu]() {
+        bool ok;
+        QString input = QInputDialog::getText(menu.parentWidget(),
+            QStringLiteral("Append bytes"),
+            QStringLiteral("Byte count (decimal or 0x hex):"),
+            QLineEdit::Normal, QStringLiteral("128"), &ok);
+        if (!ok || input.trimmed().isEmpty()) return;
+
+        QString trimmed = input.trimmed();
+        int byteCount = 0;
+        if (trimmed.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
+            byteCount = trimmed.mid(2).toInt(&ok, 16);
+        else
+            byteCount = trimmed.toInt(&ok, 10);
+        if (!ok || byteCount <= 0) return;
+
         uint64_t target = m_viewRootId ? m_viewRootId : 0;
+        int hex64Count = byteCount / 8;
+        int remainBytes = byteCount % 8;
+
         m_suppressRefresh = true;
-        m_doc->undoStack.beginMacro(QStringLiteral("Append 128 bytes"));
-        for (int i = 0; i < 16; i++)
+        m_doc->undoStack.beginMacro(QStringLiteral("Append %1 bytes").arg(byteCount));
+        int idx = 0;
+        for (int i = 0; i < hex64Count; i++, idx++)
             insertNode(target, -1, NodeKind::Hex64,
-                       QStringLiteral("field_%1").arg(i));
+                       QStringLiteral("field_%1").arg(idx));
+        for (int i = 0; i < remainBytes; i++, idx++)
+            insertNode(target, -1, NodeKind::Hex8,
+                       QStringLiteral("field_%1").arg(idx));
         m_doc->undoStack.endMacro();
         m_suppressRefresh = false;
         refresh();
@@ -1674,11 +1696,17 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
     bool ctrl  = mods & Qt::ControlModifier;
     bool shift = mods & Qt::ShiftModifier;
 
-    // Compute effective selection ID: footers use nodeId | kFooterIdBit
+    // Compute effective selection ID:
+    //   footers        → nodeId | kFooterIdBit
+    //   array elements → nodeId | kArrayElemBit | (elemIdx << 48)
+    //   everything else → nodeId
     auto effectiveId = [this](int ln, uint64_t nid) -> uint64_t {
-        if (ln >= 0 && ln < m_lastResult.meta.size() &&
-            m_lastResult.meta[ln].lineKind == LineKind::Footer)
+        if (ln < 0 || ln >= m_lastResult.meta.size()) return nid;
+        const auto& lm = m_lastResult.meta[ln];
+        if (lm.lineKind == LineKind::Footer)
             return nid | kFooterIdBit;
+        if (lm.isArrayElement && lm.arrayElementIdx >= 0)
+            return makeArrayElemSelId(nid, lm.arrayElementIdx);
         return nid;
     };
 
@@ -1727,8 +1755,8 @@ void RcxController::handleNodeClick(RcxEditor* source, int line,
 
     if (m_selIds.size() == 1) {
         uint64_t sid = *m_selIds.begin();
-        // Strip footer bit for node lookup
-        int idx = m_doc->tree.indexOfId(sid & ~kFooterIdBit);
+        // Strip footer/array bits for node lookup
+        int idx = m_doc->tree.indexOfId(sid & ~(kFooterIdBit | kArrayElemBit | kArrayElemMask));
         if (idx >= 0) emit nodeSelected(idx);
     }
 }
@@ -2298,11 +2326,11 @@ void RcxController::attachViaPlugin(const QString& providerIdentifier, const QSt
         return;
     }
 
-    uint64_t newBase = provider->base();
     m_doc->undoStack.clear();
     m_doc->provider = std::move(provider);
     m_doc->dataPath.clear();
-    m_doc->tree.baseAddress = (newBase != 0) ? newBase : m_doc->tree.baseAddress;
+    // Don't overwrite baseAddress — caller (e.g. selfTest) already set it.
+    // User-initiated source switches go through selectSource() which does update it.
 
     // Re-evaluate stored formula against the new provider
     if (!m_doc->tree.baseAddressFormula.isEmpty()) {
@@ -2465,6 +2493,12 @@ void RcxController::clearSources() {
     resetSnapshot();
     pushSavedSourcesToEditors();
     refresh();
+}
+
+void RcxController::copySavedSources(const QVector<SavedSourceEntry>& sources, int activeIdx) {
+    m_savedSources = sources;
+    m_activeSourceIdx = activeIdx;
+    pushSavedSourcesToEditors();
 }
 
 void RcxController::pushSavedSourcesToEditors() {

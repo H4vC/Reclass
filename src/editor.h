@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QSet>
 #include <QPoint>
+#include <QHash>
 
 class QsciScintilla;
 class QsciLexerCPP;
@@ -95,8 +96,12 @@ private:
     bool   m_hoverInside = false;
     uint64_t m_hoveredNodeId = 0;
     int      m_hoveredLine = -1;
+    uint64_t m_prevHoveredNodeId = 0;  // for incremental marker update
+    int      m_prevHoveredLine = -1;   // for incremental marker update
     QSet<uint64_t> m_currentSelIds;
     QVector<int> m_hoverSpanLines;  // Lines with hover span indicators
+    // ── nodeId → display-line index (built in applyDocument) ──
+    QHash<uint64_t, QVector<int>> m_nodeLineIndex;
     // ── Drag selection ──
     bool m_dragging = false;
     bool m_dragStarted = false;   // true once drag threshold exceeded

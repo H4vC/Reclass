@@ -131,6 +131,7 @@ public:
     void switchSource(int idx) { switchToSavedSource(idx); }
     void clearSources();
     void selectSource(const QString& text);
+    void copySavedSources(const QVector<SavedSourceEntry>& sources, int activeIdx);
 
     // Value tracking toggle (per-tab, off by default)
     bool trackValues() const { return m_trackValues; }

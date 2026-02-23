@@ -256,8 +256,9 @@ private slots:
     {
         WinDbgMemoryProvider prov(m_connString);
         QVERIFY(prov.isValid());
-        QVERIFY2(prov.base() != 0, "Should have a non-zero base from first module");
-        qDebug() << "Base address:" << QString("0x%1").arg(prov.base(), 0, 16);
+        // WinDbg provider no longer auto-selects a module base — it returns 0
+        // so the controller doesn't override the user's chosen base address.
+        QCOMPARE(prov.base(), (uint64_t)0);
     }
 
     // ── Read: MZ header on main thread ──
@@ -445,6 +446,139 @@ private slots:
         QCOMPARE(raw->Type(), IPlugin::ProviderPlugin);
         QCOMPARE(raw->Name(), std::string("WinDbg Memory"));
         delete raw;
+    }
+
+    // ── Kernel session tests ──
+    // Requires a WinDbg instance with a kernel dump loaded and
+    // .server tcp:port=5055 running.  Skipped automatically if
+    // no server is available.  Override with WINDBG_KERNEL_CONN env var.
+
+    void provider_kernel_connect()
+    {
+        QString kernelConn = qEnvironmentVariable("WINDBG_KERNEL_CONN",
+            "tcp:Port=5055,Server=localhost");
+        if (!canConnect(kernelConn))
+            QSKIP("No kernel debug server available (set WINDBG_KERNEL_CONN)");
+
+        WinDbgMemoryProvider prov(kernelConn);
+        QVERIFY2(prov.isValid(), "Should connect to kernel debug server");
+        QCOMPARE(prov.kind(), QStringLiteral("WinDbg"));
+
+        qDebug() << "Kernel provider name:" << prov.name();
+        qDebug() << "Kernel provider base:" << QString("0x%1").arg(prov.base(), 0, 16);
+        qDebug() << "Kernel provider isLive:" << prov.isLive();
+
+        // Name should not be an arbitrary user-mode DLL
+        QVERIFY2(!prov.name().contains("WS2_32", Qt::CaseInsensitive),
+                 qPrintable("Name should not be 'WS2_32', got: " + prov.name()));
+    }
+
+    void provider_kernel_read_base()
+    {
+        QString kernelConn = qEnvironmentVariable("WINDBG_KERNEL_CONN",
+            "tcp:Port=5055,Server=localhost");
+        if (!canConnect(kernelConn))
+            QSKIP("No kernel debug server available");
+
+        WinDbgMemoryProvider prov(kernelConn);
+        QVERIFY(prov.isValid());
+
+        // Provider no longer auto-selects a base.  Use a known kernel address
+        // from env, or skip.
+        QString addrStr = qEnvironmentVariable("WINDBG_KERNEL_ADDR", "");
+        if (addrStr.isEmpty())
+            QSKIP("Set WINDBG_KERNEL_ADDR to a readable kernel address");
+
+        bool ok = false;
+        uint64_t addr = addrStr.toULongLong(&ok, 16);
+        QVERIFY2(ok && addr != 0, "WINDBG_KERNEL_ADDR must be a valid hex address");
+
+        uint8_t buf[16] = {};
+        ok = prov.read(addr, buf, 16);
+        QVERIFY2(ok, "Should read from kernel address");
+
+        bool allZero = true;
+        for (int i = 0; i < 16; ++i) {
+            if (buf[i] != 0) { allZero = false; break; }
+        }
+        QVERIFY2(!allZero, "Kernel read returned all zeros");
+    }
+
+    void provider_kernel_read_high_address()
+    {
+        QString kernelConn = qEnvironmentVariable("WINDBG_KERNEL_CONN",
+            "tcp:Port=5055,Server=localhost");
+        if (!canConnect(kernelConn))
+            QSKIP("No kernel debug server available");
+
+        WinDbgMemoryProvider prov(kernelConn);
+        QVERIFY(prov.isValid());
+
+        // Use env var for a specific kernel address (e.g. _EPROCESS),
+        // otherwise fall back to the provider's base.
+        QString addrStr = qEnvironmentVariable("WINDBG_KERNEL_ADDR", "");
+        uint64_t addr = 0;
+        if (!addrStr.isEmpty()) {
+            bool ok = false;
+            addr = addrStr.toULongLong(&ok, 16);
+            if (!ok) addr = 0;
+        }
+        if (addr == 0) addr = prov.base();
+
+        uint8_t buf[64] = {};
+        bool ok = prov.read(addr, buf, 64);
+        QVERIFY2(ok, qPrintable(QString("Should read kernel addr 0x%1")
+                                 .arg(addr, 0, 16)));
+
+        bool allZero = true;
+        for (int i = 0; i < 64; ++i) {
+            if (buf[i] != 0) { allZero = false; break; }
+        }
+        QVERIFY2(!allZero, "Kernel high-address read returned all zeros");
+
+        qDebug() << "Read 64 bytes at" << QString("0x%1").arg(addr, 0, 16)
+                 << "first 8:" << QString("%1 %2 %3 %4 %5 %6 %7 %8")
+                    .arg(buf[0], 2, 16, QChar('0'))
+                    .arg(buf[1], 2, 16, QChar('0'))
+                    .arg(buf[2], 2, 16, QChar('0'))
+                    .arg(buf[3], 2, 16, QChar('0'))
+                    .arg(buf[4], 2, 16, QChar('0'))
+                    .arg(buf[5], 2, 16, QChar('0'))
+                    .arg(buf[6], 2, 16, QChar('0'))
+                    .arg(buf[7], 2, 16, QChar('0'));
+    }
+
+    void provider_kernel_read_backgroundThread()
+    {
+        QString kernelConn = qEnvironmentVariable("WINDBG_KERNEL_CONN",
+            "tcp:Port=5055,Server=localhost");
+        if (!canConnect(kernelConn))
+            QSKIP("No kernel debug server available");
+
+        QString addrStr = qEnvironmentVariable("WINDBG_KERNEL_ADDR", "");
+        if (addrStr.isEmpty())
+            QSKIP("Set WINDBG_KERNEL_ADDR to a readable kernel address");
+
+        bool ok = false;
+        uint64_t addr = addrStr.toULongLong(&ok, 16);
+        QVERIFY2(ok && addr != 0, "WINDBG_KERNEL_ADDR must be a valid hex address");
+
+        WinDbgMemoryProvider prov(kernelConn);
+        QVERIFY(prov.isValid());
+
+        // Simulate the controller's async refresh pattern
+        QFuture<QByteArray> future = QtConcurrent::run([&prov, addr]() -> QByteArray {
+            return prov.readBytes(addr, 4096);
+        });
+        future.waitForFinished();
+        QByteArray data = future.result();
+
+        QCOMPARE(data.size(), 4096);
+        bool allZero = true;
+        for (int i = 0; i < data.size(); ++i) {
+            if (data[i] != '\0') { allZero = false; break; }
+        }
+        QVERIFY2(!allZero, "Kernel background read returned all zeros");
     }
 };
 

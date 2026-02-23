@@ -787,6 +787,14 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     m_meta = result.meta;
     m_layout = result.layout;
 
+    // Build nodeId → display-line index for O(1) hover/selection lookup
+    m_nodeLineIndex.clear();
+    m_nodeLineIndex.reserve(m_meta.size());
+    for (int i = 0; i < m_meta.size(); i++) {
+        if (m_meta[i].nodeId != 0)
+            m_nodeLineIndex[m_meta[i].nodeId].append(i);
+    }
+
     // Dynamically resize margin to fit the current hex digit tier
     QString marginSizer = QString("  %1  ").arg(QString(m_layout.offsetHexDigits, '0'));
     m_sci->setMarginWidth(0, marginSizer);
@@ -835,9 +843,12 @@ void RcxEditor::applyDocument(const ComposeResult& result) {
     m_applyingDocument = false;
 
     // Re-apply hover markers (setText() clears all Scintilla markers).
+    // Reset m_prevHoveredNodeId so the incremental logic re-adds markers.
     // applyHoverCursor() is NOT called here — it evaluates hitTest() against
     // composed text that updateCommandRow() will overwrite.  The correct call
     // happens via applySelectionOverlays() after all text is finalized.
+    m_prevHoveredNodeId = 0;
+    m_prevHoveredLine = -1;
     applyHoverHighlight();
 }
 
@@ -1064,18 +1075,33 @@ void RcxEditor::applySelectionOverlay(const QSet<uint64_t>& selIds) {
     m_sci->SendScintilla(QsciScintillaBase::SCI_SETINDICATORCURRENT, IND_EDITABLE);
     m_sci->SendScintilla(QsciScintillaBase::SCI_INDICATORCLEARRANGE, (unsigned long)0, docLen);
 
-    for (int i = 0; i < m_meta.size(); i++) {
-        if (isSyntheticLine(m_meta[i])) continue;
-        uint64_t nodeId = m_meta[i].nodeId;
-        bool isFooter = (m_meta[i].lineKind == LineKind::Footer);
-
-        // Footers check for footerId, non-footers check for plain nodeId
-        uint64_t checkId = isFooter ? (nodeId | kFooterIdBit) : nodeId;
-        if (selIds.contains(checkId)) {
-            m_sci->markerAdd(i, M_SELECTED);
-            m_sci->markerAdd(i, M_ACCENT);
+    // Use index: iterate selected IDs, look up their lines
+    for (uint64_t selId : selIds) {
+        bool isFooterSel = (selId & kFooterIdBit) != 0;
+        bool isArrayElemSel = (selId & kArrayElemBit) != 0;
+        int arrayElemIdx = isArrayElemSel ? arrayElemIdxFromSelId(selId) : -1;
+        uint64_t nodeId = selId & ~(kFooterIdBit | kArrayElemBit | kArrayElemMask);
+        auto it = m_nodeLineIndex.constFind(nodeId);
+        if (it == m_nodeLineIndex.constEnd()) continue;
+        for (int ln : *it) {
+            if (isSyntheticLine(m_meta[ln])) continue;
+            bool isFooter = (m_meta[ln].lineKind == LineKind::Footer);
+            // Match selection type to line type
+            if (isFooterSel && !isFooter) continue;
+            if (!isFooterSel && isFooter) continue;
+            // Array element: match by element index
+            if (isArrayElemSel) {
+                if (!m_meta[ln].isArrayElement || m_meta[ln].arrayElementIdx != arrayElemIdx)
+                    continue;
+            } else if (m_meta[ln].isArrayElement) {
+                // Plain nodeId selection shouldn't highlight individual array elements
+                // (the header line is enough)
+                continue;
+            }
+            m_sci->markerAdd(ln, M_SELECTED);
+            m_sci->markerAdd(ln, M_ACCENT);
             if (!isFooter)
-                paintEditableSpans(i);
+                paintEditableSpans(ln);
         }
     }
 
@@ -1088,28 +1114,63 @@ void RcxEditor::applySelectionOverlay(const QSet<uint64_t>& selIds) {
 }
 
 void RcxEditor::applyHoverHighlight() {
-    m_sci->markerDeleteAll(M_HOVER);
+    uint64_t prevId = m_prevHoveredNodeId;
+    int prevLine = m_prevHoveredLine;
+    m_prevHoveredNodeId = m_hoveredNodeId;
+    m_prevHoveredLine = m_hoveredLine;
+
+    // Fast path: nothing changed (same node AND same line)
+    if (prevId == m_hoveredNodeId && prevLine == m_hoveredLine
+        && m_hoveredNodeId != 0) return;
+
+    // Remove old hover markers
+    if (prevId != 0) {
+        // Check if old hovered line was a single-line highlight (footer or array element)
+        bool prevSingleLine = (prevLine >= 0 && prevLine < m_meta.size() &&
+            (m_meta[prevLine].lineKind == LineKind::Footer || m_meta[prevLine].isArrayElement));
+        if (prevSingleLine) {
+            m_sci->markerDelete(prevLine, M_HOVER);
+        } else {
+            auto it = m_nodeLineIndex.constFind(prevId);
+            if (it != m_nodeLineIndex.constEnd()) {
+                for (int ln : *it)
+                    m_sci->markerDelete(ln, M_HOVER);
+            }
+        }
+    }
+
     if (m_editState.active) return;
     if (!m_hoverInside) return;
     if (m_hoveredNodeId == 0) return;
 
-    // Check if hovered line is a footer - footers highlight independently
+    // Footer and array elements highlight only the specific line
     bool hoveringFooter = (m_hoveredLine >= 0 && m_hoveredLine < m_meta.size() &&
                            m_meta[m_hoveredLine].lineKind == LineKind::Footer);
+    bool hoveringArrayElem = (m_hoveredLine >= 0 && m_hoveredLine < m_meta.size() &&
+                              m_meta[m_hoveredLine].isArrayElement);
 
     // Check if the hovered item is already selected (using appropriate ID)
-    uint64_t checkId = hoveringFooter ? (m_hoveredNodeId | kFooterIdBit) : m_hoveredNodeId;
+    uint64_t checkId;
+    if (hoveringFooter)
+        checkId = m_hoveredNodeId | kFooterIdBit;
+    else if (hoveringArrayElem)
+        checkId = makeArrayElemSelId(m_hoveredNodeId, m_meta[m_hoveredLine].arrayElementIdx);
+    else
+        checkId = m_hoveredNodeId;
     if (m_currentSelIds.contains(checkId)) return;
 
-    if (hoveringFooter) {
-        // Footer: only highlight this specific line
+    if (hoveringFooter || hoveringArrayElem) {
+        // Single-line highlight for footers and array elements
         m_sci->markerAdd(m_hoveredLine, M_HOVER);
     } else {
-        // Non-footer: highlight all matching lines except footers
-        for (int i = 0; i < m_meta.size(); i++) {
-            if (m_meta[i].nodeId == m_hoveredNodeId &&
-                m_meta[i].lineKind != LineKind::Footer)
-                m_sci->markerAdd(i, M_HOVER);
+        // Non-footer, non-array-element: highlight all lines for this node
+        auto it = m_nodeLineIndex.constFind(m_hoveredNodeId);
+        if (it != m_nodeLineIndex.constEnd()) {
+            for (int ln : *it) {
+                if (m_meta[ln].lineKind != LineKind::Footer &&
+                    !m_meta[ln].isArrayElement)
+                    m_sci->markerAdd(ln, M_HOVER);
+            }
         }
     }
 }
@@ -2617,11 +2678,16 @@ void RcxEditor::updateEditableIndicators(int line) {
         return;
     }
 
-    // Helper to check if a line's node is selected (handles footer IDs)
+    // Helper to check if a line's node is selected (handles footer/array element IDs)
     auto isLineSelected = [this](const LineMeta* lm) -> bool {
         if (!lm) return false;
-        bool isFooter = (lm->lineKind == LineKind::Footer);
-        uint64_t checkId = isFooter ? (lm->nodeId | kFooterIdBit) : lm->nodeId;
+        uint64_t checkId;
+        if (lm->lineKind == LineKind::Footer)
+            checkId = lm->nodeId | kFooterIdBit;
+        else if (lm->isArrayElement && lm->arrayElementIdx >= 0)
+            checkId = makeArrayElemSelId(lm->nodeId, lm->arrayElementIdx);
+        else
+            checkId = lm->nodeId;
         return m_currentSelIds.contains(checkId);
     };
 

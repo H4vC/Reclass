@@ -303,6 +303,7 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                 lm.lineKind   = LineKind::Field;
                 lm.nodeKind   = node.elementKind;
                 lm.isArrayElement = true;
+                lm.arrayElementIdx = i;
                 lm.offsetText = fmt::fmtOffsetMargin(elemAddr, false, state.offsetHexDigits);
                 lm.offsetAddr = elemAddr;
                 lm.ptrBase    = state.currentPtrBase;

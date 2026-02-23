@@ -372,6 +372,21 @@ if(BUILD_TESTING)
     target_link_libraries(test_options_dialog PRIVATE ${QT}::Widgets ${QT}::Test)
     add_test(NAME test_options_dialog COMMAND test_options_dialog)
 
+    add_executable(test_source_provider tests/test_source_provider.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp src/controller.cpp
+        src/processpicker.cpp src/processpicker.ui src/providerregistry.cpp
+        src/typeselectorpopup.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS}
+        src/resources.qrc)
+    target_include_directories(test_source_provider PRIVATE src third_party/fadec)
+    target_link_libraries(test_source_provider PRIVATE
+        ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test ${QT}::Svg
+        QScintilla::QScintilla)
+    if(WIN32)
+        target_link_libraries(test_source_provider PRIVATE dbghelp psapi ${_QT_WINEXTRAS})
+    endif()
+    add_test(NAME test_source_provider COMMAND test_source_provider)
+
     if(WIN32)
         add_executable(test_windbg_provider tests/test_windbg_provider.cpp
             plugins/WinDbgMemory/WinDbgMemoryPlugin.cpp)
@@ -380,6 +395,19 @@ if(BUILD_TESTING)
             ${QT}::Widgets ${QT}::Concurrent ${QT}::Test dbgeng ole32)
         add_test(NAME test_windbg_provider COMMAND test_windbg_provider)
     endif()
+
+    add_executable(bench_large_class tests/bench_large_class.cpp
+        src/editor.cpp src/compose.cpp src/format.cpp src/addressparser.cpp
+        src/providerregistry.cpp
+        src/themes/theme.cpp src/themes/thememanager.cpp ${DISASM_SRCS})
+    target_include_directories(bench_large_class PRIVATE src third_party/fadec)
+    target_link_libraries(bench_large_class PRIVATE
+        ${QT}::Widgets ${QT}::PrintSupport ${QT}::Concurrent ${QT}::Test
+        QScintilla::QScintilla)
+    if(WIN32)
+        target_link_libraries(bench_large_class PRIVATE dbghelp psapi ${_QT_WINEXTRAS})
+    endif()
+    add_test(NAME bench_large_class COMMAND bench_large_class)
 
     # Deploy Qt runtime DLLs for tests (run windeployqt on a representative test exe
     # that links the broadest set of Qt modules; all test exes share the same output dir)

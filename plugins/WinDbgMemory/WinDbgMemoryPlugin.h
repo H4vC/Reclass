@@ -83,6 +83,7 @@ private:
     bool     m_isLive = false;
     bool     m_writable = false;
     bool     m_isRemote = false;   // true when connected via DebugConnect (tcp/npipe)
+    mutable int  m_readFailCount = 0;
 
     // Dedicated thread for DbgEng COM operations.  The remote TCP/pipe
     // transport is thread-affine — all calls must happen on the thread

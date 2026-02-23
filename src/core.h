@@ -481,6 +481,17 @@ static constexpr uint64_t kCommandRowId   = UINT64_MAX;
 static constexpr int      kCommandRowLine = 0;
 static constexpr int      kFirstDataLine  = 1;
 static constexpr uint64_t kFooterIdBit    = 0x8000000000000000ULL;
+static constexpr uint64_t kArrayElemBit   = 0x4000000000000000ULL;  // marks array element selection
+static constexpr uint64_t kArrayElemShift = 48;                     // bits 48-61 hold element index
+static constexpr uint64_t kArrayElemMask  = 0x3FFF000000000000ULL;  // 14 bits → max 16383 elements
+
+// Encode an array element selection ID: nodeId | kArrayElemBit | (elemIdx << 48)
+inline uint64_t makeArrayElemSelId(uint64_t nodeId, int elemIdx) {
+    return nodeId | kArrayElemBit | ((uint64_t)(elemIdx & 0x3FFF) << kArrayElemShift);
+}
+inline int arrayElemIdxFromSelId(uint64_t selId) {
+    return (int)((selId & kArrayElemMask) >> kArrayElemShift);
+}
 
 struct LineMeta {
     int      nodeIdx        = -1;

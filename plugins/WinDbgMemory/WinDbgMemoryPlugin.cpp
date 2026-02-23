@@ -197,53 +197,15 @@ void WinDbgMemoryProvider::querySessionInfo()
         }
     }
 
-    if (m_symbols) {
-        ULONG numModules = 0, numUnloaded = 0;
-        hr = m_symbols->GetNumberModules(&numModules, &numUnloaded);
-        qDebug() << "[WinDbg] GetNumberModules hr=" << Qt::hex << (unsigned long)hr
-                 << "loaded=" << numModules << "unloaded=" << numUnloaded;
-        if (SUCCEEDED(hr) && numModules > 0) {
-            char modName[256] = {};
-            ULONG modSize = 0;
-            hr = m_symbols->GetModuleNames(0, 0, nullptr, 0, nullptr,
-                                            modName, sizeof(modName), &modSize,
-                                            nullptr, 0, nullptr);
-            if (SUCCEEDED(hr) && modSize > 0)
-                m_name = QString::fromUtf8(modName);
-        }
-    }
-
-    if (m_name.isEmpty())
-        m_name = m_isLive ? QStringLiteral("DbgEng (Live)") : QStringLiteral("DbgEng (Dump)");
-
-    if (m_symbols) {
-        ULONG numModules = 0, numUnloaded = 0;
-        hr = m_symbols->GetNumberModules(&numModules, &numUnloaded);
-        if (SUCCEEDED(hr) && numModules > 0) {
-            ULONG64 moduleBase = 0;
-            hr = m_symbols->GetModuleByIndex(0, &moduleBase);
-            qDebug() << "[WinDbg] Module 0 base=" << Qt::hex << moduleBase;
-            if (SUCCEEDED(hr))
-                m_base = moduleBase;
-        }
-    }
-
-    if (m_base && m_dataSpaces) {
-        uint8_t probe[2] = {};
-        ULONG got = 0;
-        hr = m_dataSpaces->ReadVirtual(m_base, probe, 2, &got);
-        qDebug() << "[WinDbg] Probe read at" << Qt::hex << m_base
-                 << "hr=" << (unsigned long)hr << "got=" << got
-                 << "bytes:" << (int)probe[0] << (int)probe[1];
-        if (FAILED(hr) || got == 0) {
-            qWarning() << "[WinDbg] Probe read FAILED — cleaning up";
-            cleanup();
-            return;
-        }
-    }
+    // WinDbg provides access to the entire virtual address space.
+    // Do NOT auto-select a module as base — let the user set their
+    // own base address.  m_base stays 0 so the controller won't
+    // override tree.baseAddress.
+    m_name = m_isLive ? QStringLiteral("WinDbg (Live)")
+                      : QStringLiteral("WinDbg (Dump)");
 
     qDebug() << "[WinDbg] Ready. name=" << m_name
-             << "base=" << Qt::hex << m_base << "isLive=" << m_isLive;
+             << "isLive=" << m_isLive;
 #endif
 }
 
@@ -305,8 +267,18 @@ bool WinDbgMemoryProvider::read(uint64_t addr, void* buf, int len) const
     dispatchToOwner([&]() {
         ULONG bytesRead = 0;
         HRESULT hr = m_dataSpaces->ReadVirtual(addr, buf, (ULONG)len, &bytesRead);
-        if (FAILED(hr) || (int)bytesRead < len)
-            memset((char*)buf + bytesRead, 0, len - bytesRead);
+        if (SUCCEEDED(hr) && (int)bytesRead >= len) {
+            result = true;
+            return;
+        }
+        // Partial or failed read — zero-fill remainder and log
+        memset((char*)buf + bytesRead, 0, len - bytesRead);
+        ++m_readFailCount;
+        if (m_readFailCount <= 5 || (m_readFailCount % 100) == 0)
+            qDebug() << "[WinDbg] ReadVirtual FAILED addr=0x" << Qt::hex << addr
+                     << "len=" << Qt::dec << len
+                     << "hr=0x" << Qt::hex << (unsigned long)hr
+                     << "got=" << Qt::dec << bytesRead;
         result = bytesRead > 0;
     });
     return result;

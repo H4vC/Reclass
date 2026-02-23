@@ -1994,7 +1994,22 @@ QMdiSubWindow* MainWindow::project_new(const QString& classKeyword) {
 
     buildEmptyStruct(doc->tree, classKeyword);
 
+    // Inherit source from current tab (if any)
+    auto* currentCtrl = activeController();
+    if (currentCtrl && currentCtrl->document()->provider
+        && currentCtrl->document()->provider->isValid()) {
+        doc->provider = currentCtrl->document()->provider;
+    }
+
     auto* sub = createTab(doc);
+
+    // Copy saved sources to new tab's controller
+    if (currentCtrl && !currentCtrl->savedSources().isEmpty()) {
+        auto& newTab = m_tabs[sub];
+        newTab.ctrl->copySavedSources(currentCtrl->savedSources(),
+                                       currentCtrl->activeSourceIndex());
+    }
+
     rebuildWorkspaceModel();
     return sub;
 }
