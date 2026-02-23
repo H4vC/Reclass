@@ -196,6 +196,7 @@ struct Node {
     NodeKind elementKind = NodeKind::UInt8;  // Array: element type; Pointer with ptrDepth>0: target type
     int      ptrDepth   = 0;   // Pointer: 0=struct/void ptr, 1=primitive*, 2=primitive**
     int      viewIndex  = 0;   // Array: current view offset (transient)
+    QVector<QPair<QString, int64_t>> enumMembers; // Enum: name→value pairs
 
     // Note: Returns 0 for Array-of-Struct/Array. Use tree.structSpan() for accurate size.
     int byteSize() const {
@@ -229,6 +230,16 @@ struct Node {
         o["elementKind"] = kindToString(elementKind);
         if (ptrDepth > 0)
             o["ptrDepth"] = ptrDepth;
+        if (!enumMembers.isEmpty()) {
+            QJsonArray arr;
+            for (const auto& m : enumMembers) {
+                QJsonObject em;
+                em["name"] = m.first;
+                em["value"] = QString::number(m.second);
+                arr.append(em);
+            }
+            o["enumMembers"] = arr;
+        }
         return o;
     }
     static Node fromJson(const QJsonObject& o) {
@@ -246,6 +257,14 @@ struct Node {
         n.refId     = o["refId"].toString("0").toULongLong();
         n.elementKind = kindFromString(o["elementKind"].toString("UInt8"));
         n.ptrDepth  = qBound(0, o["ptrDepth"].toInt(0), 2);
+        if (o.contains("enumMembers")) {
+            QJsonArray arr = o["enumMembers"].toArray();
+            for (const auto& v : arr) {
+                QJsonObject em = v.toObject();
+                n.enumMembers.append({em["name"].toString(),
+                                      em["value"].toString("0").toLongLong()});
+            }
+        }
         return n;
     }
 
@@ -599,6 +618,7 @@ inline constexpr int kMinTypeW    = 8;   // Minimum type column width (fits "uin
 inline constexpr int kMaxTypeW    = 128; // Maximum type column width
 inline constexpr int kMinNameW    = 8;   // Minimum name column width (matches ASCII preview)
 inline constexpr int kMaxNameW    = 128; // Maximum name column width
+inline constexpr int kCompactTypeW    = 20; // Type column cap for compact column mode
 
 inline ColumnSpan typeSpanFor(const LineMeta& lm, int typeW = kColType) {
     if (lm.lineKind != LineKind::Field || lm.isContinuation) return {};
@@ -851,17 +871,18 @@ namespace fmt {
     QString fmtNodeLine(const Node& node, const Provider& prov,
                         uint64_t addr, int depth, int subLine = 0,
                         const QString& comment = {}, int colType = kColType, int colName = kColName,
-                        const QString& typeOverride = {});
+                        const QString& typeOverride = {}, bool compact = false);
     QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation, int hexDigits = 8);
-    QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType = kColType, int colName = kColName);
+    QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType = kColType, int colName = kColName, bool compact = false);
     QString fmtStructFooter(const Node& node, int depth, int totalSize = -1);
-    QString fmtArrayHeader(const Node& node, int depth, int viewIdx, bool collapsed, int colType = kColType, int colName = kColName, const QString& elemStructName = {});
+    QString fmtArrayHeader(const Node& node, int depth, int viewIdx, bool collapsed, int colType = kColType, int colName = kColName, const QString& elemStructName = {}, bool compact = false);
     QString structTypeName(const Node& node);  // Full type string for struct headers
     QString arrayTypeName(NodeKind elemKind, int count, const QString& structName = {});
     QString pointerTypeName(NodeKind kind, const QString& targetName);
     QString fmtPointerHeader(const Node& node, int depth, bool collapsed,
                              const Provider& prov, uint64_t addr,
-                             const QString& ptrTypeName, int colType = kColType, int colName = kColName);
+                             const QString& ptrTypeName, int colType = kColType, int colName = kColName,
+                             bool compact = false);
     QString validateBaseAddress(const QString& text);
     QString indent(int depth);
     QString readValue(const Node& node, const Provider& prov,
@@ -871,10 +892,12 @@ namespace fmt {
     QByteArray parseValue(NodeKind kind, const QString& text, bool* ok);
     QByteArray parseAsciiValue(const QString& text, int expectedSize, bool* ok);
     QString validateValue(NodeKind kind, const QString& text);
+    QString fmtEnumMember(const QString& name, int64_t value, int depth, int nameW);
 } // namespace fmt
 
 // ── Compose function forward declaration ──
 
-ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewRootId = 0);
+ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewRootId = 0,
+                      bool compactColumns = false);
 
 } // namespace rcx

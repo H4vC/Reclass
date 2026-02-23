@@ -72,8 +72,8 @@ RcxDocument::RcxDocument(QObject* parent)
     });
 }
 
-ComposeResult RcxDocument::compose(uint64_t viewRootId) const {
-    return rcx::compose(tree, *provider, viewRootId);
+ComposeResult RcxDocument::compose(uint64_t viewRootId, bool compactColumns) const {
+    return rcx::compose(tree, *provider, viewRootId, compactColumns);
 }
 
 bool RcxDocument::save(const QString& path) {
@@ -493,9 +493,9 @@ void RcxController::refresh() {
 
     // Compose against snapshot provider if active, otherwise real provider
     if (m_snapshotProv)
-        m_lastResult = rcx::compose(m_doc->tree, *m_snapshotProv, m_viewRootId);
+        m_lastResult = rcx::compose(m_doc->tree, *m_snapshotProv, m_viewRootId, m_compactColumns);
     else
-        m_lastResult = m_doc->compose(m_viewRootId);
+        m_lastResult = m_doc->compose(m_viewRootId, m_compactColumns);
 
     s_composeDoc = nullptr;
 
@@ -802,6 +802,148 @@ void RcxController::deleteRootStruct(uint64_t structId) {
         setViewRootId(nextRoot);
     }
 
+    if (!m_suppressRefresh) refresh();
+}
+
+void RcxController::groupIntoUnion(const QSet<uint64_t>& nodeIds) {
+    if (nodeIds.size() < 2) return;
+
+    // Collect nodes and verify they share the same parent
+    QVector<int> indices;
+    uint64_t parentId = 0;
+    bool first = true;
+    for (uint64_t id : nodeIds) {
+        int idx = m_doc->tree.indexOfId(id);
+        if (idx < 0) return;
+        if (first) { parentId = m_doc->tree.nodes[idx].parentId; first = false; }
+        else if (m_doc->tree.nodes[idx].parentId != parentId) return;
+        indices.append(idx);
+    }
+
+    // Sort by offset to find the union's insertion point
+    std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+        return m_doc->tree.nodes[a].offset < m_doc->tree.nodes[b].offset;
+    });
+    int unionOffset = m_doc->tree.nodes[indices.first()].offset;
+
+    bool wasSuppressed = m_suppressRefresh;
+    m_suppressRefresh = true;
+    m_doc->undoStack.beginMacro(QStringLiteral("Group into union"));
+
+    // Save copies of nodes before removal (subtrees included)
+    struct SavedNode { Node node; QVector<Node> subtree; };
+    QVector<SavedNode> saved;
+    for (int idx : indices) {
+        SavedNode sn;
+        sn.node = m_doc->tree.nodes[idx];
+        auto sub = m_doc->tree.subtreeIndices(sn.node.id);
+        for (int si : sub)
+            if (si != idx) sn.subtree.append(m_doc->tree.nodes[si]);
+        saved.append(sn);
+    }
+
+    // Remove selected nodes (in reverse order to keep indices valid)
+    for (int i = indices.size() - 1; i >= 0; i--) {
+        int idx = m_doc->tree.indexOfId(saved[i].node.id);
+        if (idx >= 0) {
+            QVector<Node> subtree;
+            for (int si : m_doc->tree.subtreeIndices(saved[i].node.id))
+                subtree.append(m_doc->tree.nodes[si]);
+            m_doc->undoStack.push(new RcxCommand(this,
+                cmd::Remove{saved[i].node.id, subtree, {}}));
+        }
+    }
+
+    // Insert union node
+    Node unionNode;
+    unionNode.kind = NodeKind::Struct;
+    unionNode.classKeyword = QStringLiteral("union");
+    unionNode.parentId = parentId;
+    unionNode.offset = unionOffset;
+    unionNode.id = m_doc->tree.reserveId();
+    m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{unionNode}));
+    uint64_t unionId = unionNode.id;
+
+    // Re-insert nodes as children of the union, all at offset 0
+    for (const auto& sn : saved) {
+        Node copy = sn.node;
+        copy.parentId = unionId;
+        copy.offset = 0;
+        copy.id = m_doc->tree.reserveId();
+        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{copy}));
+
+        // Re-insert subtree with updated parentId for direct children
+        uint64_t oldId = sn.node.id;
+        uint64_t newId = copy.id;
+        for (const auto& child : sn.subtree) {
+            Node cc = child;
+            if (cc.parentId == oldId) cc.parentId = newId;
+            cc.id = m_doc->tree.reserveId();
+            m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{cc}));
+        }
+    }
+
+    m_doc->undoStack.endMacro();
+    m_suppressRefresh = wasSuppressed;
+    if (!m_suppressRefresh) refresh();
+}
+
+void RcxController::dissolveUnion(uint64_t unionId) {
+    int ui = m_doc->tree.indexOfId(unionId);
+    if (ui < 0) return;
+    const Node& unionNode = m_doc->tree.nodes[ui];
+    if (unionNode.kind != NodeKind::Struct
+        || unionNode.resolvedClassKeyword() != QStringLiteral("union")) return;
+
+    uint64_t parentId = unionNode.parentId;
+    int unionOffset = unionNode.offset;
+
+    // Collect union children
+    auto children = m_doc->tree.childrenOf(unionId);
+    struct SavedNode { Node node; QVector<Node> subtree; };
+    QVector<SavedNode> saved;
+    for (int ci : children) {
+        SavedNode sn;
+        sn.node = m_doc->tree.nodes[ci];
+        auto sub = m_doc->tree.subtreeIndices(sn.node.id);
+        for (int si : sub)
+            if (si != ci) sn.subtree.append(m_doc->tree.nodes[si]);
+        saved.append(sn);
+    }
+
+    bool wasSuppressed = m_suppressRefresh;
+    m_suppressRefresh = true;
+    m_doc->undoStack.beginMacro(QStringLiteral("Dissolve union"));
+
+    // Remove the union (and all its children)
+    {
+        QVector<Node> subtree;
+        for (int si : m_doc->tree.subtreeIndices(unionId))
+            subtree.append(m_doc->tree.nodes[si]);
+        m_doc->undoStack.push(new RcxCommand(this,
+            cmd::Remove{unionId, subtree, {}}));
+    }
+
+    // Re-insert children under the union's parent, at the union's offset
+    for (const auto& sn : saved) {
+        Node copy = sn.node;
+        copy.parentId = parentId;
+        copy.offset = unionOffset + sn.node.offset;
+        copy.id = m_doc->tree.reserveId();
+        m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{copy}));
+
+        uint64_t oldId = sn.node.id;
+        uint64_t newId = copy.id;
+        for (const auto& child : sn.subtree) {
+            Node cc = child;
+            if (cc.parentId == oldId) cc.parentId = newId;
+            cc.id = m_doc->tree.reserveId();
+            m_doc->undoStack.push(new RcxCommand(this, cmd::Insert{cc}));
+        }
+    }
+
+    m_doc->undoStack.endMacro();
+    m_suppressRefresh = wasSuppressed;
     if (!m_suppressRefresh) refresh();
 }
 
@@ -1343,6 +1485,21 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
         }
         menu.addSeparator();
 
+        // Check if all selected nodes share the same parent (required for grouping)
+        {
+            bool sameParent = true;
+            uint64_t firstParent = 0;
+            bool fp = true;
+            for (uint64_t id : ids) {
+                int idx = m_doc->tree.indexOfId(id);
+                if (idx < 0) { sameParent = false; break; }
+                if (fp) { firstParent = m_doc->tree.nodes[idx].parentId; fp = false; }
+                else if (m_doc->tree.nodes[idx].parentId != firstParent) { sameParent = false; break; }
+            }
+            if (sameParent)
+                menu.addAction("Group into Union", [this, ids]() { groupIntoUnion(ids); });
+        }
+
         menu.addAction(icon("files.svg"), QString("Duplicate %1 nodes").arg(count), [this, ids]() {
             for (uint64_t id : ids) {
                 int idx = m_doc->tree.indexOfId(id);
@@ -1551,6 +1708,26 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
 
         }
 
+        // Dissolve Union: available on union itself or any of its children
+        {
+            uint64_t targetUnionId = 0;
+            if (node.kind == NodeKind::Struct
+                && node.resolvedClassKeyword() == QStringLiteral("union")) {
+                targetUnionId = nodeId;
+            } else if (node.parentId != 0) {
+                int pi = m_doc->tree.indexOfId(node.parentId);
+                if (pi >= 0 && m_doc->tree.nodes[pi].kind == NodeKind::Struct
+                    && m_doc->tree.nodes[pi].resolvedClassKeyword() == QStringLiteral("union")) {
+                    targetUnionId = node.parentId;
+                }
+            }
+            if (targetUnionId != 0) {
+                menu.addAction("Dissolve Union", [this, targetUnionId]() {
+                    dissolveUnion(targetUnionId);
+                });
+            }
+        }
+
         menu.addAction(icon("files.svg"), "D&uplicate\tCtrl+D", [this, nodeId]() {
             int ni = m_doc->tree.indexOfId(nodeId);
             if (ni >= 0) duplicateNode(ni);
@@ -1618,13 +1795,14 @@ void RcxController::showContextMenu(RcxEditor* editor, int line, int nodeIdx,
     });
 
     menu.addSeparator();
-    {
+    // Only add Track Value Changes here if not already added in node-specific section
+    if (!hasNode) {
         auto* act = menu.addAction("Track Value Changes");
         act->setCheckable(true);
         act->setChecked(m_trackValues);
         connect(act, &QAction::toggled, this, &RcxController::setTrackValues);
+        menu.addSeparator();
     }
-    menu.addSeparator();
 
     menu.addAction(icon("arrow-left.svg"), "Undo", [this]() {
         m_doc->undoStack.undo();
@@ -2520,6 +2698,11 @@ void RcxController::pushSavedSourcesToEditors() {
 void RcxController::setRefreshInterval(int ms) {
     if (m_refreshTimer)
         m_refreshTimer->setInterval(qMax(1, ms));
+}
+
+void RcxController::setCompactColumns(bool v) {
+    m_compactColumns = v;
+    refresh();
 }
 
 void RcxController::setupAutoRefresh() {

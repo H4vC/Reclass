@@ -312,6 +312,18 @@ public:
                 }
             }
         }
+        // Tree view items — use theme.hover for selection instead of blue
+        if (element == CE_ItemViewItem) {
+            if (auto* vi = qstyleoption_cast<const QStyleOptionViewItem*>(opt)) {
+                QStyleOptionViewItem patched = *vi;
+                patched.palette.setColor(QPalette::Highlight,
+                    vi->palette.color(QPalette::Mid));               // theme.hover
+                patched.palette.setColor(QPalette::HighlightedText,
+                    vi->palette.color(QPalette::Text));
+                QProxyStyle::drawControl(element, &patched, p, w);
+                return;
+            }
+        }
         QProxyStyle::drawControl(element, opt, p, w);
     }
 };
@@ -427,7 +439,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Restore menu bar title case setting (after menus are created)
     {
         QSettings s("Reclass", "Reclass");
-        m_titleBar->setMenuBarTitleCase(s.value("menuBarTitleCase", true).toBool());
+        m_titleBar->setMenuBarTitleCase(s.value("menuBarTitleCase", false).toBool());
         if (s.value("showIcon", false).toBool())
             m_titleBar->setShowIcon(true);
     }
@@ -567,6 +579,16 @@ void MainWindow::createMenus() {
     }
     themeMenu->addSeparator();
     Qt5Qt6AddAction(themeMenu, "Edit Theme...", QKeySequence::UnknownKey, QIcon(), this, &MainWindow::editTheme);
+
+    view->addSeparator();
+    auto* actCompact = view->addAction("Compact &Columns");
+    actCompact->setCheckable(true);
+    actCompact->setChecked(settings.value("compactColumns", true).toBool());
+    connect(actCompact, &QAction::triggered, this, [this](bool checked) {
+        QSettings("Reclass", "Reclass").setValue("compactColumns", checked);
+        for (auto& tab : m_tabs)
+            tab.ctrl->setCompactColumns(checked);
+    });
 
     view->addSeparator();
     view->addAction(m_workspaceDock->toggleViewAction());
@@ -988,6 +1010,9 @@ QMdiSubWindow* MainWindow::createTab(RcxDocument* doc) {
     // Create the initial split pane
     tab.panes.append(createSplitPane(tab));
 
+    // Apply global compact columns setting to new tab
+    ctrl->setCompactColumns(QSettings("Reclass", "Reclass").value("compactColumns", true).toBool());
+
     // Give every controller the shared document list for cross-tab type visibility
     ctrl->setProjectDocuments(&m_allDocs);
     rebuildAllDocs();
@@ -1101,6 +1126,76 @@ static void buildEmptyStruct(NodeTree& tree, const QString& classKeyword = QStri
         n.offset = i * 8;
         tree.addNode(n);
     }
+
+    // Default project: add an example enum and a class with a union
+    if (classKeyword.isEmpty()) {
+        // ── Example enum: _POOL_TYPE ──
+        {
+            Node e;
+            e.kind = NodeKind::Struct;
+            e.name = QStringLiteral("_POOL_TYPE");
+            e.structTypeName = QStringLiteral("_POOL_TYPE");
+            e.classKeyword = QStringLiteral("enum");
+            e.parentId = 0;
+            e.collapsed = false;
+            e.enumMembers = {
+                {QStringLiteral("NonPagedPool"), 0},
+                {QStringLiteral("PagedPool"), 1},
+                {QStringLiteral("NonPagedPoolMustSucceed"), 2},
+                {QStringLiteral("DontUseThisType"), 3},
+                {QStringLiteral("NonPagedPoolCacheAligned"), 4},
+                {QStringLiteral("PagedPoolCacheAligned"), 5},
+            };
+            tree.addNode(e);
+        }
+
+        // ── Example class with a union: _SAMPLE_OBJECT ──
+        {
+            Node cls;
+            cls.kind = NodeKind::Struct;
+            cls.name = QStringLiteral("sample");
+            cls.structTypeName = QStringLiteral("_SAMPLE_OBJECT");
+            cls.classKeyword = QStringLiteral("class");
+            cls.parentId = 0;
+            cls.offset = 0;
+            int ci = tree.addNode(cls);
+            uint64_t clsId = tree.nodes[ci].id;
+
+            // Field: uint32_t Type at offset 0
+            { Node n; n.kind = NodeKind::UInt32; n.name = QStringLiteral("Type");
+              n.parentId = clsId; n.offset = 0; tree.addNode(n); }
+            // Field: uint32_t Size at offset 4
+            { Node n; n.kind = NodeKind::UInt32; n.name = QStringLiteral("Size");
+              n.parentId = clsId; n.offset = 4; tree.addNode(n); }
+
+            // Union at offset 8
+            {
+                Node u;
+                u.kind = NodeKind::Struct;
+                u.name = QStringLiteral("Data");
+                u.structTypeName = QStringLiteral("Data");
+                u.classKeyword = QStringLiteral("union");
+                u.parentId = clsId;
+                u.offset = 8;
+                int ui = tree.addNode(u);
+                uint64_t uId = tree.nodes[ui].id;
+
+                // Union member: uint64_t AsLong
+                { Node n; n.kind = NodeKind::UInt64; n.name = QStringLiteral("AsLong");
+                  n.parentId = uId; n.offset = 0; tree.addNode(n); }
+                // Union member: void* AsPointer
+                { Node n; n.kind = NodeKind::Pointer64; n.name = QStringLiteral("AsPointer");
+                  n.parentId = uId; n.offset = 0; n.collapsed = true; tree.addNode(n); }
+                // Union member: float[2] AsFloat2
+                { Node n; n.kind = NodeKind::Vec2; n.name = QStringLiteral("AsFloat2");
+                  n.parentId = uId; n.offset = 0; tree.addNode(n); }
+            }
+
+            // Field: void* Next at offset 16
+            { Node n; n.kind = NodeKind::Pointer64; n.name = QStringLiteral("Next");
+              n.parentId = clsId; n.offset = 16; n.collapsed = true; tree.addNode(n); }
+        }
+    }
 }
 
 void MainWindow::newClass() {
@@ -1184,6 +1279,73 @@ static void buildEditorDemo(NodeTree& tree, uintptr_t editorAddr) {
         n.parentId = rootId;
         n.offset = off;
         tree.addNode(n);
+    }
+
+    // ── Example enum: _POOL_TYPE ──
+    {
+        Node e;
+        e.kind = NodeKind::Struct;
+        e.name = QStringLiteral("_POOL_TYPE");
+        e.structTypeName = QStringLiteral("_POOL_TYPE");
+        e.classKeyword = QStringLiteral("enum");
+        e.parentId = 0;
+        e.collapsed = false;
+        e.enumMembers = {
+            {QStringLiteral("NonPagedPool"), 0},
+            {QStringLiteral("PagedPool"), 1},
+            {QStringLiteral("NonPagedPoolMustSucceed"), 2},
+            {QStringLiteral("DontUseThisType"), 3},
+            {QStringLiteral("NonPagedPoolCacheAligned"), 4},
+            {QStringLiteral("PagedPoolCacheAligned"), 5},
+        };
+        tree.addNode(e);
+    }
+
+    // ── Example class with a union: _SAMPLE_OBJECT ──
+    {
+        Node cls;
+        cls.kind = NodeKind::Struct;
+        cls.name = QStringLiteral("sample");
+        cls.structTypeName = QStringLiteral("_SAMPLE_OBJECT");
+        cls.classKeyword = QStringLiteral("class");
+        cls.parentId = 0;
+        cls.offset = 0;
+        int ci = tree.addNode(cls);
+        uint64_t clsId = tree.nodes[ci].id;
+
+        // Field: uint32_t Type at offset 0
+        { Node n; n.kind = NodeKind::UInt32; n.name = QStringLiteral("Type");
+          n.parentId = clsId; n.offset = 0; tree.addNode(n); }
+        // Field: uint32_t Size at offset 4
+        { Node n; n.kind = NodeKind::UInt32; n.name = QStringLiteral("Size");
+          n.parentId = clsId; n.offset = 4; tree.addNode(n); }
+
+        // Union at offset 8
+        {
+            Node u;
+            u.kind = NodeKind::Struct;
+            u.name = QStringLiteral("Data");
+            u.structTypeName = QStringLiteral("Data");
+            u.classKeyword = QStringLiteral("union");
+            u.parentId = clsId;
+            u.offset = 8;
+            int ui = tree.addNode(u);
+            uint64_t uId = tree.nodes[ui].id;
+
+            // Union member: uint64_t AsLong
+            { Node n; n.kind = NodeKind::UInt64; n.name = QStringLiteral("AsLong");
+              n.parentId = uId; n.offset = 0; tree.addNode(n); }
+            // Union member: void* AsPointer
+            { Node n; n.kind = NodeKind::Pointer64; n.name = QStringLiteral("AsPointer");
+              n.parentId = uId; n.offset = 0; n.collapsed = true; tree.addNode(n); }
+            // Union member: float[2] AsFloat2
+            { Node n; n.kind = NodeKind::Vec2; n.name = QStringLiteral("AsFloat2");
+              n.parentId = uId; n.offset = 0; tree.addNode(n); }
+        }
+
+        // Field: void* Next at offset 16
+        { Node n; n.kind = NodeKind::Pointer64; n.name = QStringLiteral("Next");
+          n.parentId = clsId; n.offset = 16; n.collapsed = true; tree.addNode(n); }
     }
 }
 
@@ -1424,16 +1586,26 @@ void MainWindow::applyTheme(const Theme& theme) {
     if (auto* w = findChild<QWidget*>("resizeGrip"))
         static_cast<ResizeGrip*>(w)->setGripColor(theme.textFaint);
 
-    // Workspace tree: text color matches menu bar
+    // Workspace tree: colors from theme (selection + text)
     if (m_workspaceTree) {
         QPalette tp = m_workspaceTree->palette();
         tp.setColor(QPalette::Text, theme.textDim);
+        tp.setColor(QPalette::Highlight, theme.hover);
+        tp.setColor(QPalette::HighlightedText, theme.text);
         m_workspaceTree->setPalette(tp);
     }
 
-    // Dock titlebar: restyle label + close button
-    if (m_dockTitleLabel)
-        m_dockTitleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(theme.textDim.name()));
+    // Dock titlebar: restyle via palette + close button
+    if (m_dockTitleLabel) {
+        QPalette lp = m_dockTitleLabel->palette();
+        lp.setColor(QPalette::WindowText, theme.textDim);
+        m_dockTitleLabel->setPalette(lp);
+    }
+    if (auto* titleBar = m_workspaceDock ? m_workspaceDock->titleBarWidget() : nullptr) {
+        QPalette tbPal = titleBar->palette();
+        tbPal.setColor(QPalette::Window, theme.backgroundAlt);
+        titleBar->setPalette(tbPal);
+    }
     if (m_dockCloseBtn)
         m_dockCloseBtn->setStyleSheet(QStringLiteral(
             "QToolButton { color: %1; border: none; padding: 0px 4px 2px 4px; font-size: 12px; }"
@@ -1873,6 +2045,7 @@ void MainWindow::importFromSource() {
     m_mdiArea->closeAllSubWindows();
     createTab(doc);
     rebuildWorkspaceModel();
+    m_workspaceDock->show();
     m_statusLabel->setText(QStringLiteral("Imported %1 classes from source").arg(classCount));
 }
 
@@ -1922,6 +2095,7 @@ void MainWindow::importPdb() {
     m_mdiArea->closeAllSubWindows();
     createTab(doc);
     rebuildWorkspaceModel();
+    m_workspaceDock->show();
     m_statusLabel->setText(QStringLiteral("Imported %1 classes from %2")
         .arg(classCount).arg(QFileInfo(pdbPath).fileName()));
 }
@@ -2051,6 +2225,7 @@ QMdiSubWindow* MainWindow::project_open(const QString& path) {
         m_mdiArea->closeAllSubWindows();
         auto* sub = createTab(doc);
         rebuildWorkspaceModel();
+        m_workspaceDock->show();
         int classCount = 0;
         for (const auto& n : doc->tree.nodes)
             if (n.parentId == 0 && n.kind == NodeKind::Struct) classCount++;
@@ -2071,6 +2246,7 @@ QMdiSubWindow* MainWindow::project_open(const QString& path) {
 
     auto* sub = createTab(doc);
     rebuildWorkspaceModel();
+    m_workspaceDock->show();
     return sub;
 }
 
@@ -2101,7 +2277,7 @@ void MainWindow::project_close(QMdiSubWindow* sub) {
 // ── Workspace Dock ──
 
 void MainWindow::createWorkspaceDock() {
-    m_workspaceDock = new QDockWidget("Project Tree", this);
+    m_workspaceDock = new QDockWidget("Project", this);
     m_workspaceDock->setObjectName("WorkspaceDock");
     m_workspaceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     m_workspaceDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
@@ -2111,17 +2287,21 @@ void MainWindow::createWorkspaceDock() {
         const auto& t = ThemeManager::instance().current();
 
         auto* titleBar = new QWidget(m_workspaceDock);
+        titleBar->setAutoFillBackground(true);
+        {
+            QPalette tbPal = titleBar->palette();
+            tbPal.setColor(QPalette::Window, t.backgroundAlt);
+            titleBar->setPalette(tbPal);
+        }
         auto* layout = new QHBoxLayout(titleBar);
         layout->setContentsMargins(6, 2, 2, 2);
         layout->setSpacing(0);
 
-        m_dockTitleLabel = new QLabel("Project Tree", titleBar);
-        m_dockTitleLabel->setStyleSheet(QStringLiteral("color: %1;").arg(t.textDim.name()));
+        m_dockTitleLabel = new QLabel("Project", titleBar);
         {
-            QString fontName = QSettings("Reclass", "Reclass").value("font", "JetBrains Mono").toString();
-            QFont f(fontName, 12);
-            f.setFixedPitch(true);
-            m_dockTitleLabel->setFont(f);
+            QPalette lp = m_dockTitleLabel->palette();
+            lp.setColor(QPalette::WindowText, t.textDim);
+            m_dockTitleLabel->setPalette(lp);
         }
         layout->addWidget(m_dockTitleLabel);
 
@@ -2149,6 +2329,16 @@ void MainWindow::createWorkspaceDock() {
     m_workspaceTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_workspaceTree->setExpandsOnDoubleClick(false);
     m_workspaceTree->setMouseTracking(true);
+
+    // Override palette: selection + hover use theme colors (not default blue)
+    {
+        const auto& t = ThemeManager::instance().current();
+        QPalette tp = m_workspaceTree->palette();
+        tp.setColor(QPalette::Text, t.textDim);
+        tp.setColor(QPalette::Highlight, t.hover);
+        tp.setColor(QPalette::HighlightedText, t.text);
+        m_workspaceTree->setPalette(tp);
+    }
 
     m_workspaceTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_workspaceTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {

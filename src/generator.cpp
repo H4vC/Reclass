@@ -315,7 +315,8 @@ static void emitStruct(GenContext& ctx, uint64_t structId) {
                 && !ctx.forwardDeclared.contains(child.refId)) {
                 QString fwdName = ctx.structName(ctx.tree.nodes[refIdx]);
                 QString fwdKw = ctx.tree.nodes[refIdx].resolvedClassKeyword();
-                if (fwdKw == QStringLiteral("enum")) fwdKw = QStringLiteral("struct");
+                if (fwdKw == QStringLiteral("enum") && ctx.tree.nodes[refIdx].enumMembers.isEmpty())
+                    fwdKw = QStringLiteral("struct");
                 ctx.output += QStringLiteral("%1 %2;\n").arg(fwdKw, fwdName);
                 ctx.forwardDeclared.insert(child.refId);
             }
@@ -327,7 +328,21 @@ static void emitStruct(GenContext& ctx, uint64_t structId) {
     int structSize = ctx.tree.structSpan(structId, &ctx.childMap);
 
     QString kw = node.resolvedClassKeyword();
-    if (kw == QStringLiteral("enum")) kw = QStringLiteral("struct");  // enum is cosmetic
+
+    // Enum with members: emit as proper C enum
+    if (kw == QStringLiteral("enum") && !node.enumMembers.isEmpty()) {
+        ctx.output += QStringLiteral("enum %1 {\n").arg(typeName);
+        for (const auto& m : node.enumMembers) {
+            ctx.output += QStringLiteral("    %1 = %2,\n")
+                .arg(sanitizeIdent(m.first))
+                .arg(m.second);
+        }
+        ctx.output += QStringLiteral("};\n\n");
+        ctx.visiting.remove(structId);
+        return;
+    }
+
+    if (kw == QStringLiteral("enum")) kw = QStringLiteral("struct");  // enum without members: fallback
     ctx.output += QStringLiteral("%1 %2 {\n").arg(kw, typeName);
 
     emitStructBody(ctx, structId);

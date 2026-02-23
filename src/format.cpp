@@ -23,6 +23,14 @@ static QString fit(QString s, int w) {
     return s.leftJustified(w, ' ');
 }
 
+// Like fit() but overflows instead of truncating: if s exceeds w, return full string
+static QString fitOverflow(const QString& s, int w) {
+    if (w <= 0) return {};
+    if (s.size() <= w)
+        return s.leftJustified(w, ' ');
+    return s;
+}
+
 // ── Type name ──
 
 // Override seam: injectable type-name provider
@@ -140,8 +148,8 @@ QString fmtOffsetMargin(uint64_t absoluteOffset, bool isContinuation, int hexDig
 // ── Struct type name (for width calculation) ──
 
 QString structTypeName(const Node& node) {
-    // Full type string: "struct TypeName" or just "struct" if no typename
-    QString base = typeName(node.kind).trimmed();  // "struct"
+    // Full type string: "struct TypeName", "union TypeName", "class TypeName", etc.
+    QString base = node.resolvedClassKeyword();
     if (!node.structTypeName.isEmpty())
         return base + QStringLiteral(" ") + node.structTypeName;
     return base;
@@ -149,11 +157,16 @@ QString structTypeName(const Node& node) {
 
 // ── Struct header / footer ──
 
-QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType, int colName) {
+QString fmtStructHeader(const Node& node, int depth, bool collapsed, int colType, int colName, bool compact) {
     // Columnar format: <type> <name> { (or no brace when collapsed)
     QString ind = indent(depth);
-    QString type = fit(structTypeName(node), colType);
+    QString rawType = structTypeName(node);
     QString suffix = collapsed ? QString() : QStringLiteral("{");
+    if (node.name.isEmpty()) {
+        // Anonymous struct/union: "union {" with no column padding
+        return ind + rawType + SEP + suffix;
+    }
+    QString type = compact ? fitOverflow(rawType, colType) : fit(rawType, colType);
     return ind + type + SEP + node.name + SEP + suffix;
 }
 
@@ -163,9 +176,10 @@ QString fmtStructFooter(const Node& /*node*/, int depth, int /*totalSize*/) {
 
 // ── Array header ──
 // Columnar format: <type[count]> <name> { (or no brace when collapsed)
-QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collapsed, int colType, int colName, const QString& elemStructName) {
+QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collapsed, int colType, int colName, const QString& elemStructName, bool compact) {
     QString ind = indent(depth);
-    QString type = fit(arrayTypeName(node.elementKind, node.arrayLen, elemStructName), colType);
+    QString rawType = arrayTypeName(node.elementKind, node.arrayLen, elemStructName);
+    QString type = compact ? fitOverflow(rawType, colType) : fit(rawType, colType);
     QString suffix = collapsed ? QString() : QStringLiteral("{");
     return ind + type + SEP + node.name + SEP + suffix;
 }
@@ -174,10 +188,16 @@ QString fmtArrayHeader(const Node& node, int depth, int /*viewIdx*/, bool collap
 
 QString fmtPointerHeader(const Node& node, int depth, bool collapsed,
                          const Provider& prov, uint64_t addr,
-                         const QString& ptrTypeName, int colType, int colName) {
+                         const QString& ptrTypeName, int colType, int colName,
+                         bool compact) {
     QString ind = indent(depth);
-    QString type = fit(ptrTypeName, colType);
+    bool overflow = compact && ptrTypeName.size() > colType;
+    QString type = compact ? fitOverflow(ptrTypeName, colType) : fit(ptrTypeName, colType);
     if (collapsed) {
+        if (overflow) {
+            // Overflow: no column padding
+            return ind + type + SEP + node.name + SEP + readValue(node, prov, addr, 0);
+        }
         // Collapsed: show pointer value instead of brace (name padded for value alignment)
         QString name = fit(node.name, colName);
         QString val = fit(readValue(node, prov, addr, 0), COL_VALUE);
@@ -366,12 +386,22 @@ QString readValue(const Node& node, const Provider& prov,
 QString fmtNodeLine(const Node& node, const Provider& prov,
                     uint64_t addr, int depth, int subLine,
                     const QString& comment, int colType, int colName,
-                    const QString& typeOverride) {
+                    const QString& typeOverride, bool compact) {
     QString ind = indent(depth);
-    QString type = typeOverride.isEmpty() ? typeName(node.kind, colType) : fit(typeOverride, colType);
-    QString name = fit(node.name, colName);
+
+    // Compute raw type string for overflow detection
+    QString rawType = typeOverride.isEmpty() ? typeNameRaw(node.kind) : typeOverride;
+    bool overflow = compact && rawType.size() > colType;
+
+    QString type = overflow ? fitOverflow(rawType, colType)
+                            : (typeOverride.isEmpty() ? typeName(node.kind, colType)
+                                                      : fit(typeOverride, colType));
+    QString name = overflow ? node.name : fit(node.name, colName);
+
+    // Effective column width for this line (accounts for overflow, clamped to hard max)
+    int effectiveColType = overflow ? rawType.size() : colType;
     // Blank prefix for continuation lines (same width as type+sep+name+sep)
-    const int prefixW = colType + colName + 2 * kSepWidth;
+    const int prefixW = effectiveColType + (overflow ? name.size() : colName) + 2 * kSepWidth;
 
     // Comment suffix (only present when a comment is provided; no trailing padding)
     QString cmtSuffix = comment.isEmpty() ? QString()
@@ -394,7 +424,8 @@ QString fmtNodeLine(const Node& node, const Provider& prov,
         return ind + type + SEP + ascii + SEP + hex + cmtSuffix;
     }
 
-    QString val = fit(readValue(node, prov, addr, subLine), COL_VALUE);
+    QString val = overflow ? readValue(node, prov, addr, subLine)
+                           : fit(readValue(node, prov, addr, subLine), COL_VALUE);
     return ind + type + SEP + name + SEP + val + cmtSuffix;
 }
 
@@ -672,6 +703,11 @@ QString validateBaseAddress(const QString& text) {
     if (s.isEmpty()) return QStringLiteral("empty");
     //s.remove('`');
     return AddressParser::validate(s);
+}
+
+QString fmtEnumMember(const QString& name, int64_t value, int depth, int nameW) {
+    QString ind = indent(depth);
+    return ind + name.leftJustified(nameW) + QStringLiteral(" = ") + QString::number(value);
 }
 
 } // namespace rcx::fmt

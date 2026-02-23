@@ -1,5 +1,6 @@
 #include "import_source.h"
 #include <QHash>
+#include <QSet>
 #include <QVector>
 #include <QRegularExpression>
 #include <QDebug>
@@ -285,13 +286,16 @@ struct ParsedField {
     int     commentOffset = -1; // from // 0xNN (-1 = none)
     int     bitfieldWidth = -1; // -1 = not a bitfield
     QString pointerTarget;     // for Type* -> the type name
+    bool    isUnion = false;               // union container
+    QVector<ParsedField> unionMembers;     // children of union
 };
 
 struct ParsedStruct {
     QString name;
-    QString keyword; // "struct" or "class"
+    QString keyword; // "struct", "class", or "enum"
     QVector<ParsedField> fields;
     int declaredSize = -1; // from static_assert
+    QVector<QPair<QString, int64_t>> enumValues; // for keyword="enum"
 };
 
 struct PendingRef {
@@ -378,8 +382,7 @@ struct Parser {
             } else if (checkIdent("typedef")) {
                 parseTypedef();
             } else if (checkIdent("enum")) {
-                skipToSemiOrBrace();
-                if (check(TokKind::RBrace)) { advance(); match(TokKind::Semi); }
+                parseEnumDef();
             } else if (peek().kind == TokKind::Hash) {
                 // preprocessor (shouldn't reach here if tokenizer skipped them)
                 advance();
@@ -464,9 +467,15 @@ struct Parser {
                 // Might be "struct TypeName fieldName;" - fall through to field parsing
             }
 
-            // Union: pick first member only
+            // Union: create container with all members
             if (checkIdent("union")) {
                 parseUnion(ps);
+                continue;
+            }
+
+            // Enum definition inside struct
+            if (checkIdent("enum")) {
+                parseEnumDef();
                 continue;
             }
 
@@ -489,33 +498,76 @@ struct Parser {
     void parseUnion(ParsedStruct& ps) {
         advance(); // skip "union"
 
-        // Optional union name
+        // Optional union tag name (before {)
         if (check(TokKind::Ident) && peek(1).kind == TokKind::LBrace) {
-            advance(); // skip union name
+            advance(); // skip union tag name
         }
 
         if (!match(TokKind::LBrace)) { skipToSemiOrBrace(); return; }
 
-        // Parse first member of union
-        bool gotFirst = false;
+        // Parse ALL members of the union
+        ParsedField unionField;
+        unionField.isUnion = true;
+
         while (peek().kind != TokKind::RBrace && peek().kind != TokKind::Eof) {
-            if (!gotFirst) {
-                ParsedField field;
-                if (parseField(field)) {
-                    ps.fields.append(field);
-                    gotFirst = true;
-                } else {
-                    advance();
+            // Handle nested unions inside this union
+            if (checkIdent("union")) {
+                // Recurse: create a sub-union ParsedStruct temporarily,
+                // then steal its fields as a nested union member
+                ParsedStruct tmp;
+                parseUnion(tmp);
+                for (auto& f : tmp.fields)
+                    unionField.unionMembers.append(f);
+                continue;
+            }
+
+            // Handle anonymous struct inside union: struct { ... };
+            if ((checkIdent("struct") || checkIdent("class")) && peek(1).kind == TokKind::LBrace) {
+                advance(); // skip "struct"
+                advance(); // skip "{"
+                int depth = 1;
+                while (peek().kind != TokKind::Eof && depth > 0) {
+                    if (peek().kind == TokKind::LBrace) depth++;
+                    else if (peek().kind == TokKind::RBrace) depth--;
+                    if (depth > 0) advance();
                 }
+                if (check(TokKind::RBrace)) advance();
+                if (check(TokKind::Ident)) advance(); // optional field name
+                match(TokKind::Semi);
+                continue;
+            }
+
+            // Handle nested named struct definition inside union
+            if ((checkIdent("struct") || checkIdent("class")) &&
+                peek(1).kind == TokKind::Ident && peek(2).kind == TokKind::LBrace) {
+                parseStructOrForward();
+                continue;
+            }
+
+            ParsedField field;
+            if (parseField(field)) {
+                unionField.unionMembers.append(field);
             } else {
-                // Skip remaining union members
-                skipToSemiOrBrace();
+                advance();
             }
         }
         match(TokKind::RBrace);
-        // Optional field name after union close
-        if (check(TokKind::Ident)) advance();
+
+        // Optional field name after union close: union { ... } u3;
+        if (check(TokKind::Ident)) {
+            unionField.name = advance().text;
+        }
         match(TokKind::Semi);
+
+        // Determine offset from first member with a known offset
+        for (const auto& m : unionField.unionMembers) {
+            if (m.commentOffset >= 0) {
+                unionField.commentOffset = m.commentOffset;
+                break;
+            }
+        }
+
+        ps.fields.append(unionField);
     }
 
     bool parseField(ParsedField& field) {
@@ -719,6 +771,90 @@ struct Parser {
         }
         match(TokKind::Semi);
     }
+
+    void parseEnumDef() {
+        advance(); // skip "enum"
+
+        // Optional "class" or "struct" (enum class)
+        if (checkIdent("class") || checkIdent("struct"))
+            advance();
+
+        // Optional name
+        QString name;
+        if (check(TokKind::Ident) && peek(1).kind != TokKind::Semi) {
+            // Could be: enum Name { ... }; or enum Name : Type { ... };
+            // But NOT: enum Name; (forward decl) or enum Name field; (field usage)
+            if (peek(1).kind == TokKind::LBrace || peek(1).kind == TokKind::Colon) {
+                name = advance().text;
+            } else {
+                // Not an enum definition — revert. This might be a field like "enum Foo bar;"
+                return;
+            }
+        }
+
+        // Optional underlying type: enum Name : uint8_t { ... }
+        if (check(TokKind::Colon)) {
+            advance();
+            parseTypeName(); // skip underlying type
+        }
+
+        // Forward declaration: enum Name;
+        if (check(TokKind::Semi)) {
+            advance();
+            return;
+        }
+
+        if (!match(TokKind::LBrace)) { skipToSemiOrBrace(); return; }
+
+        ParsedStruct ps;
+        ps.name = name;
+        ps.keyword = QStringLiteral("enum");
+
+        // Parse enum members: Name [= Value], ...
+        int64_t nextValue = 0;
+        while (peek().kind != TokKind::RBrace && peek().kind != TokKind::Eof) {
+            if (!check(TokKind::Ident)) { advance(); continue; }
+            QString memberName = advance().text;
+            int64_t memberValue = nextValue;
+
+            if (check(TokKind::Equals)) {
+                advance();
+                // Parse value: could be number, negative number, or expression
+                bool negative = false;
+                if (peek().kind == TokKind::Other && peek().text == QStringLiteral("-")) {
+                    negative = true;
+                    advance();
+                }
+                if (check(TokKind::Number)) {
+                    bool ok;
+                    QString numText = peek().text;
+                    if (numText.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
+                        memberValue = numText.mid(2).toLongLong(&ok, 16);
+                    else
+                        memberValue = numText.toLongLong(&ok);
+                    if (negative) memberValue = -memberValue;
+                    advance();
+                } else {
+                    // Complex expression — skip to comma or brace
+                    while (peek().kind != TokKind::Comma &&
+                           peek().kind != TokKind::RBrace &&
+                           peek().kind != TokKind::Eof)
+                        advance();
+                }
+            }
+
+            ps.enumValues.append({memberName, memberValue});
+            nextValue = memberValue + 1;
+
+            // Skip comma between members
+            match(TokKind::Comma);
+        }
+        match(TokKind::RBrace);
+        match(TokKind::Semi);
+
+        if (!ps.name.isEmpty())
+            structs.append(ps);
+    }
 };
 
 // ── Padding field detection ──
@@ -758,6 +894,305 @@ static void emitHexPadding(NodeTree& tree, uint64_t parentId, int offset, int si
     }
 }
 
+// ── Bitfield grouping: emit a single hex node covering consecutive bitfields ──
+
+static void emitBitfieldGroup(NodeTree& tree, uint64_t parentId, int offset, int totalBits) {
+    int bytes = (totalBits + 7) / 8;
+    // Round up to nearest power-of-2 hex node
+    NodeKind hexKind;
+    if (bytes <= 1)      hexKind = NodeKind::Hex8;
+    else if (bytes <= 2) hexKind = NodeKind::Hex16;
+    else if (bytes <= 4) hexKind = NodeKind::Hex32;
+    else                 hexKind = NodeKind::Hex64;
+    Node n;
+    n.kind = hexKind;
+    n.parentId = parentId;
+    n.offset = offset;
+    tree.addNode(n);
+}
+
+// ── NodeTree builder: recursive field emitter ──
+
+struct BuildContext {
+    NodeTree& tree;
+    const QHash<QString, TypeInfo>& typeTable;
+    QHash<QString, uint64_t>& classIds;
+    QVector<PendingRef>& pendingRefs;
+    bool useCommentOffsets;
+    QSet<QString> enumNames;  // enum type names (emit as UInt32 + refId)
+};
+
+static void buildFields(BuildContext& ctx, uint64_t parentId, int baseOffset,
+                        const QVector<ParsedField>& fields) {
+    int computedOffset = 0;
+
+    for (int fi = 0; fi < fields.size(); fi++) {
+        const auto& field = fields[fi];
+
+        // Bitfield group: consume consecutive bitfields, emit single hex node
+        if (field.bitfieldWidth >= 0) {
+            int groupOffset;
+            if (ctx.useCommentOffsets && field.commentOffset >= 0)
+                groupOffset = field.commentOffset - baseOffset;
+            else
+                groupOffset = computedOffset;
+            int totalBits = 0;
+            while (fi < fields.size() && fields[fi].bitfieldWidth >= 0) {
+                totalBits += fields[fi].bitfieldWidth;
+                fi++;
+            }
+            fi--; // compensate for outer loop increment
+            if (totalBits > 0)
+                emitBitfieldGroup(ctx.tree, parentId, groupOffset, totalBits);
+            int bytes = (totalBits + 7) / 8;
+            int nodeSize = (bytes <= 1) ? 1 : (bytes <= 2) ? 2 : (bytes <= 4) ? 4 : 8;
+            computedOffset = groupOffset + nodeSize;
+            continue;
+        }
+
+        // Union container field
+        if (field.isUnion) {
+            int unionOffset;
+            if (ctx.useCommentOffsets && field.commentOffset >= 0)
+                unionOffset = field.commentOffset - baseOffset;
+            else
+                unionOffset = computedOffset;
+
+            Node unionNode;
+            unionNode.kind = NodeKind::Struct;
+            unionNode.classKeyword = QStringLiteral("union");
+            unionNode.name = field.name;
+            unionNode.parentId = parentId;
+            unionNode.offset = unionOffset;
+            unionNode.collapsed = true;
+
+            int unionIdx = ctx.tree.addNode(unionNode);
+            uint64_t unionId = ctx.tree.nodes[unionIdx].id;
+
+            // Build each union member independently so each starts at offset 0
+            int absUnionOffset = baseOffset + unionOffset;
+            for (const auto& member : field.unionMembers) {
+                QVector<ParsedField> single;
+                single.append(member);
+                buildFields(ctx, unionId, absUnionOffset, single);
+            }
+
+            // Advance computed offset past the union (max member size)
+            int unionSpan = ctx.tree.structSpan(unionId);
+            computedOffset = unionOffset + (unionSpan > 0 ? unionSpan : 0);
+            continue;
+        }
+
+        int fieldOffset;
+        if (ctx.useCommentOffsets && field.commentOffset >= 0)
+            fieldOffset = field.commentOffset - baseOffset;
+        else
+            fieldOffset = computedOffset;
+
+        // Resolve type
+        auto typeIt = ctx.typeTable.find(field.typeName);
+        bool knownType = typeIt != ctx.typeTable.end();
+
+        // Pointer field
+        if (field.isPointer) {
+            Node n;
+            n.kind = NodeKind::Pointer64;
+            n.name = field.name;
+            n.parentId = parentId;
+            n.offset = fieldOffset;
+            n.collapsed = true;
+
+            int nodeIdx = ctx.tree.addNode(n);
+            uint64_t nodeId = ctx.tree.nodes[nodeIdx].id;
+
+            if (!field.pointerTarget.isEmpty() &&
+                field.pointerTarget != QStringLiteral("void")) {
+                ctx.pendingRefs.append({nodeId, field.pointerTarget});
+            }
+
+            computedOffset = fieldOffset + 8;
+            continue;
+        }
+
+        // Enum-typed field: emit as UInt32 with refId to enum definition
+        if (!knownType && ctx.enumNames.contains(field.typeName)) {
+            int elemSize = 4;
+            NodeKind elemKind = NodeKind::UInt32;
+            if (!field.arraySizes.isEmpty()) {
+                int totalElements = 1;
+                for (int dim : field.arraySizes) totalElements *= (dim > 0 ? dim : 1);
+                Node n;
+                n.kind = NodeKind::Array;
+                n.name = field.name;
+                n.parentId = parentId;
+                n.offset = fieldOffset;
+                n.arrayLen = totalElements;
+                n.elementKind = elemKind;
+                ctx.tree.addNode(n);
+                computedOffset = fieldOffset + totalElements * elemSize;
+            } else {
+                Node n;
+                n.kind = elemKind;
+                n.name = field.name;
+                n.parentId = parentId;
+                n.offset = fieldOffset;
+                int nodeIdx = ctx.tree.addNode(n);
+                uint64_t nodeId = ctx.tree.nodes[nodeIdx].id;
+                ctx.pendingRefs.append({nodeId, field.typeName});
+                computedOffset = fieldOffset + elemSize;
+            }
+            continue;
+        }
+
+        // Determine base type info
+        NodeKind baseKind = NodeKind::Hex8;
+        int baseSize = 1;
+        bool isStructType = false;
+
+        if (knownType) {
+            baseKind = typeIt->kind;
+            baseSize = typeIt->size;
+        } else {
+            isStructType = true;
+        }
+
+        // Padding fields
+        if (isPaddingName(field.name) && !field.arraySizes.isEmpty()) {
+            int totalSize = baseSize;
+            for (int dim : field.arraySizes) totalSize *= (dim > 0 ? dim : 1);
+            emitHexPadding(ctx.tree, parentId, fieldOffset, totalSize);
+            computedOffset = fieldOffset + totalSize;
+            continue;
+        }
+
+        // Array fields
+        if (!field.arraySizes.isEmpty() && !isStructType) {
+            int firstDim = field.arraySizes.value(0, 1);
+            if (firstDim <= 0) firstDim = 1;
+
+            if (baseKind == NodeKind::Int8 && field.arraySizes.size() == 1 &&
+                field.typeName == QStringLiteral("char")) {
+                Node n;
+                n.kind = NodeKind::UTF8;
+                n.name = field.name;
+                n.parentId = parentId;
+                n.offset = fieldOffset;
+                n.strLen = firstDim;
+                ctx.tree.addNode(n);
+                computedOffset = fieldOffset + firstDim;
+                continue;
+            }
+
+            if (baseKind == NodeKind::UInt16 && field.arraySizes.size() == 1 &&
+                (field.typeName == QStringLiteral("wchar_t") || field.typeName == QStringLiteral("WCHAR"))) {
+                Node n;
+                n.kind = NodeKind::UTF16;
+                n.name = field.name;
+                n.parentId = parentId;
+                n.offset = fieldOffset;
+                n.strLen = firstDim;
+                ctx.tree.addNode(n);
+                computedOffset = fieldOffset + firstDim * 2;
+                continue;
+            }
+
+            if (baseKind == NodeKind::Float && field.arraySizes.size() == 1) {
+                if (firstDim == 2) {
+                    Node n; n.kind = NodeKind::Vec2; n.name = field.name;
+                    n.parentId = parentId; n.offset = fieldOffset;
+                    ctx.tree.addNode(n); computedOffset = fieldOffset + 8; continue;
+                }
+                if (firstDim == 3) {
+                    Node n; n.kind = NodeKind::Vec3; n.name = field.name;
+                    n.parentId = parentId; n.offset = fieldOffset;
+                    ctx.tree.addNode(n); computedOffset = fieldOffset + 12; continue;
+                }
+                if (firstDim == 4) {
+                    Node n; n.kind = NodeKind::Vec4; n.name = field.name;
+                    n.parentId = parentId; n.offset = fieldOffset;
+                    ctx.tree.addNode(n); computedOffset = fieldOffset + 16; continue;
+                }
+            }
+
+            if (baseKind == NodeKind::Float && field.arraySizes.size() == 2 &&
+                field.arraySizes[0] == 4 && field.arraySizes[1] == 4) {
+                Node n; n.kind = NodeKind::Mat4x4; n.name = field.name;
+                n.parentId = parentId; n.offset = fieldOffset;
+                ctx.tree.addNode(n); computedOffset = fieldOffset + 64; continue;
+            }
+
+            int totalElements = 1;
+            for (int dim : field.arraySizes) totalElements *= (dim > 0 ? dim : 1);
+
+            Node n;
+            n.kind = NodeKind::Array;
+            n.name = field.name;
+            n.parentId = parentId;
+            n.offset = fieldOffset;
+            n.arrayLen = totalElements;
+            n.elementKind = baseKind;
+            ctx.tree.addNode(n);
+            computedOffset = fieldOffset + totalElements * baseSize;
+            continue;
+        }
+
+        // Struct-type field
+        if (isStructType) {
+            if (!field.arraySizes.isEmpty()) {
+                int totalElements = 1;
+                for (int dim : field.arraySizes) totalElements *= (dim > 0 ? dim : 1);
+
+                Node n;
+                n.kind = NodeKind::Array;
+                n.name = field.name;
+                n.parentId = parentId;
+                n.offset = fieldOffset;
+                n.arrayLen = totalElements;
+                n.elementKind = NodeKind::Struct;
+                n.structTypeName = field.typeName;
+                n.collapsed = true;
+
+                int nodeIdx = ctx.tree.addNode(n);
+                uint64_t nodeId = ctx.tree.nodes[nodeIdx].id;
+                ctx.pendingRefs.append({nodeId, field.typeName});
+                continue;
+            }
+
+            Node n;
+            n.kind = NodeKind::Struct;
+            n.name = field.name;
+            n.parentId = parentId;
+            n.offset = fieldOffset;
+            n.structTypeName = field.typeName;
+            n.collapsed = true;
+
+            int nodeIdx = ctx.tree.addNode(n);
+            uint64_t nodeId = ctx.tree.nodes[nodeIdx].id;
+            ctx.pendingRefs.append({nodeId, field.typeName});
+            continue;
+        }
+
+        // Simple primitive field
+        Node n;
+        n.kind = baseKind;
+        n.name = field.name;
+        n.parentId = parentId;
+        n.offset = fieldOffset;
+        ctx.tree.addNode(n);
+        computedOffset = fieldOffset + baseSize;
+    }
+}
+
+// ── Check if any field (or union member) has a comment offset ──
+
+static bool hasAnyCommentOffset(const QVector<ParsedField>& fields) {
+    for (const auto& f : fields) {
+        if (f.commentOffset >= 0) return true;
+        if (f.isUnion && hasAnyCommentOffset(f.unionMembers)) return true;
+    }
+    return false;
+}
+
 // ── NodeTree builder ──
 
 NodeTree importFromSource(const QString& sourceCode, QString* errorMsg) {
@@ -775,7 +1210,7 @@ NodeTree importFromSource(const QString& sourceCode, QString* errorMsg) {
     parser.parse();
 
     if (parser.structs.isEmpty()) {
-        if (errorMsg) *errorMsg = QStringLiteral("No struct definitions found");
+        if (errorMsg) *errorMsg = QStringLiteral("No struct or enum definitions found");
         return {};
     }
 
@@ -798,13 +1233,19 @@ NodeTree importFromSource(const QString& sourceCode, QString* errorMsg) {
     // Determine offset mode: if ANY field in ANY struct has a comment offset, use comment mode
     bool useCommentOffsets = false;
     for (const auto& ps : parser.structs) {
-        for (const auto& f : ps.fields) {
-            if (f.commentOffset >= 0) { useCommentOffsets = true; break; }
-        }
-        if (useCommentOffsets) break;
+        if (hasAnyCommentOffset(ps.fields)) { useCommentOffsets = true; break; }
     }
 
-    // Build nodes for each struct
+    // Collect enum type names for field-type detection
+    QSet<QString> enumNames;
+    for (const auto& ps : parser.structs) {
+        if (ps.keyword == QStringLiteral("enum") && !ps.name.isEmpty())
+            enumNames.insert(ps.name);
+    }
+
+    BuildContext ctx{tree, typeTable, classIds, pendingRefs, useCommentOffsets, enumNames};
+
+    // Build nodes for each struct/enum
     for (const auto& ps : parser.structs) {
         Node structNode;
         structNode.kind = NodeKind::Struct;
@@ -815,222 +1256,21 @@ NodeTree importFromSource(const QString& sourceCode, QString* errorMsg) {
         structNode.offset = 0;
         structNode.collapsed = true;
 
+        // Enum: store members directly on the node, no child fields
+        if (ps.keyword == QStringLiteral("enum")) {
+            structNode.enumMembers = ps.enumValues;
+            int idx = tree.addNode(structNode);
+            uint64_t nodeId = tree.nodes[idx].id;
+            if (!ps.name.isEmpty())
+                classIds[ps.name] = nodeId;
+            continue;
+        }
+
         int structIdx = tree.addNode(structNode);
         uint64_t structId = tree.nodes[structIdx].id;
         classIds[ps.name] = structId;
 
-        int computedOffset = 0;
-
-        for (const auto& field : ps.fields) {
-            // Skip bitfields
-            if (field.bitfieldWidth >= 0) continue;
-
-            int fieldOffset;
-            if (useCommentOffsets && field.commentOffset >= 0)
-                fieldOffset = field.commentOffset;
-            else
-                fieldOffset = computedOffset;
-
-            // Resolve type
-            auto typeIt = typeTable.find(field.typeName);
-            bool knownType = typeIt != typeTable.end();
-
-            // Pointer field
-            if (field.isPointer) {
-                Node n;
-                n.kind = NodeKind::Pointer64;
-                n.name = field.name;
-                n.parentId = structId;
-                n.offset = fieldOffset;
-                n.collapsed = true;
-
-                int nodeIdx = tree.addNode(n);
-                uint64_t nodeId = tree.nodes[nodeIdx].id;
-
-                // If target is not void and not a primitive, defer resolution
-                if (!field.pointerTarget.isEmpty() &&
-                    field.pointerTarget != QStringLiteral("void")) {
-                    pendingRefs.append({nodeId, field.pointerTarget});
-                }
-
-                computedOffset = fieldOffset + 8; // pointer size
-                continue;
-            }
-
-            // Determine base type info
-            NodeKind baseKind = NodeKind::Hex8;
-            int baseSize = 1;
-            bool isStructType = false;
-
-            if (knownType) {
-                baseKind = typeIt->kind;
-                baseSize = typeIt->size;
-            } else {
-                // Unknown type = assume struct reference
-                isStructType = true;
-            }
-
-            // Padding fields: name-based detection
-            if (isPaddingName(field.name) && !field.arraySizes.isEmpty()) {
-                int totalSize = baseSize;
-                for (int dim : field.arraySizes) totalSize *= (dim > 0 ? dim : 1);
-                emitHexPadding(tree, structId, fieldOffset, totalSize);
-                computedOffset = fieldOffset + totalSize;
-                continue;
-            }
-
-            // Array fields
-            if (!field.arraySizes.isEmpty() && !isStructType) {
-                int firstDim = field.arraySizes.value(0, 1);
-                if (firstDim <= 0) firstDim = 1;
-
-                // Special: char[N] -> UTF8
-                if (baseKind == NodeKind::Int8 && field.arraySizes.size() == 1 &&
-                    field.typeName == QStringLiteral("char")) {
-                    Node n;
-                    n.kind = NodeKind::UTF8;
-                    n.name = field.name;
-                    n.parentId = structId;
-                    n.offset = fieldOffset;
-                    n.strLen = firstDim;
-                    tree.addNode(n);
-                    computedOffset = fieldOffset + firstDim;
-                    continue;
-                }
-
-                // Special: wchar_t[N] -> UTF16
-                if (baseKind == NodeKind::UInt16 && field.arraySizes.size() == 1 &&
-                    (field.typeName == QStringLiteral("wchar_t") || field.typeName == QStringLiteral("WCHAR"))) {
-                    Node n;
-                    n.kind = NodeKind::UTF16;
-                    n.name = field.name;
-                    n.parentId = structId;
-                    n.offset = fieldOffset;
-                    n.strLen = firstDim;
-                    tree.addNode(n);
-                    computedOffset = fieldOffset + firstDim * 2;
-                    continue;
-                }
-
-                // Special: float[2] -> Vec2, float[3] -> Vec3, float[4] -> Vec4
-                if (baseKind == NodeKind::Float && field.arraySizes.size() == 1) {
-                    if (firstDim == 2) {
-                        Node n;
-                        n.kind = NodeKind::Vec2;
-                        n.name = field.name;
-                        n.parentId = structId;
-                        n.offset = fieldOffset;
-                        tree.addNode(n);
-                        computedOffset = fieldOffset + 8;
-                        continue;
-                    }
-                    if (firstDim == 3) {
-                        Node n;
-                        n.kind = NodeKind::Vec3;
-                        n.name = field.name;
-                        n.parentId = structId;
-                        n.offset = fieldOffset;
-                        tree.addNode(n);
-                        computedOffset = fieldOffset + 12;
-                        continue;
-                    }
-                    if (firstDim == 4) {
-                        Node n;
-                        n.kind = NodeKind::Vec4;
-                        n.name = field.name;
-                        n.parentId = structId;
-                        n.offset = fieldOffset;
-                        tree.addNode(n);
-                        computedOffset = fieldOffset + 16;
-                        continue;
-                    }
-                }
-
-                // Special: float[4][4] -> Mat4x4
-                if (baseKind == NodeKind::Float && field.arraySizes.size() == 2 &&
-                    field.arraySizes[0] == 4 && field.arraySizes[1] == 4) {
-                    Node n;
-                    n.kind = NodeKind::Mat4x4;
-                    n.name = field.name;
-                    n.parentId = structId;
-                    n.offset = fieldOffset;
-                    tree.addNode(n);
-                    computedOffset = fieldOffset + 64;
-                    continue;
-                }
-
-                // Generic array
-                int totalElements = 1;
-                for (int dim : field.arraySizes) totalElements *= (dim > 0 ? dim : 1);
-
-                Node n;
-                n.kind = NodeKind::Array;
-                n.name = field.name;
-                n.parentId = structId;
-                n.offset = fieldOffset;
-                n.arrayLen = totalElements;
-                n.elementKind = baseKind;
-                tree.addNode(n);
-                computedOffset = fieldOffset + totalElements * baseSize;
-                continue;
-            }
-
-            // Struct-type field (embedded struct or array of structs)
-            if (isStructType) {
-                if (!field.arraySizes.isEmpty()) {
-                    // Array of structs
-                    int totalElements = 1;
-                    for (int dim : field.arraySizes) totalElements *= (dim > 0 ? dim : 1);
-
-                    Node n;
-                    n.kind = NodeKind::Array;
-                    n.name = field.name;
-                    n.parentId = structId;
-                    n.offset = fieldOffset;
-                    n.arrayLen = totalElements;
-                    n.elementKind = NodeKind::Struct;
-                    n.structTypeName = field.typeName;
-                    n.collapsed = true;
-
-                    int nodeIdx = tree.addNode(n);
-                    uint64_t nodeId = tree.nodes[nodeIdx].id;
-                    pendingRefs.append({nodeId, field.typeName});
-
-                    // For computed offsets: we don't know struct size yet, use 0
-                    // The offset will be approximate for unknown struct sizes
-                    if (!useCommentOffsets) {
-                        // Try to estimate from same-file structs
-                        // Can't know size yet since we may not have parsed it
-                        // Just advance by 0 (will be corrected by comment offsets if present)
-                    }
-                    continue;
-                }
-
-                // Embedded struct
-                Node n;
-                n.kind = NodeKind::Struct;
-                n.name = field.name;
-                n.parentId = structId;
-                n.offset = fieldOffset;
-                n.structTypeName = field.typeName;
-                n.collapsed = true;
-
-                int nodeIdx = tree.addNode(n);
-                uint64_t nodeId = tree.nodes[nodeIdx].id;
-                pendingRefs.append({nodeId, field.typeName});
-                // Don't advance computed offset for unknown struct size
-                continue;
-            }
-
-            // Simple primitive field
-            Node n;
-            n.kind = baseKind;
-            n.name = field.name;
-            n.parentId = structId;
-            n.offset = fieldOffset;
-            tree.addNode(n);
-            computedOffset = fieldOffset + baseSize;
-        }
+        buildFields(ctx, structId, 0, ps.fields);
 
         // Apply static_assert size: add tail padding if needed
         auto sizeIt = parser.sizeAsserts.find(ps.name);

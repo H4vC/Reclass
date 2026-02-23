@@ -34,7 +34,7 @@ private:
     QToolButton* m_btnClose   = nullptr;
 
     Theme m_theme;
-    bool  m_titleCase = true;
+    bool  m_titleCase = false;
 
     QToolButton* makeChromeButton(const QString& iconPath);
     void toggleMaximize();

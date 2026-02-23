@@ -40,7 +40,7 @@ public:
         return m ? QString::fromLatin1(m->typeName) : QStringLiteral("???");
     }
 
-    ComposeResult compose(uint64_t viewRootId = 0) const;
+    ComposeResult compose(uint64_t viewRootId = 0, bool compactColumns = false) const;
     bool save(const QString& path);
     bool load(const QString& path);
     void loadData(const QString& binaryPath);
@@ -102,6 +102,8 @@ public:
     void batchRemoveNodes(const QVector<int>& nodeIndices);
     void batchChangeKind(const QVector<int>& nodeIndices, NodeKind newKind);
     void deleteRootStruct(uint64_t structId);
+    void groupIntoUnion(const QSet<uint64_t>& nodeIds);
+    void dissolveUnion(uint64_t unionId);
 
     void applyCommand(const Command& cmd, bool isUndo);
     void refresh();
@@ -122,6 +124,7 @@ public:
     RcxDocument* document() const { return m_doc; }
     void setEditorFont(const QString& fontName);
     void setRefreshInterval(int ms);
+    void setCompactColumns(bool v);
 
     // MCP bridge accessors
     void setSuppressRefresh(bool v) { m_suppressRefresh = v; }
@@ -154,6 +157,7 @@ private:
     QSet<uint64_t>     m_selIds;
     int                m_anchorLine = -1;
     bool               m_suppressRefresh = false;
+    bool               m_compactColumns = false;
     uint64_t           m_viewRootId = 0;
 
     // ── Saved sources for quick-switch ──

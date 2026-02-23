@@ -7,10 +7,11 @@ namespace rcx {
 
 struct PdbTypeInfo {
     uint32_t typeIndex;      // TPI type index
-    QString  name;           // struct/class/union name
+    QString  name;           // struct/class/union/enum name
     uint64_t size;           // sizeof in bytes
     int      childCount;     // direct member count
     bool     isUnion;        // union vs struct/class
+    bool     isEnum = false; // enum type
 };
 
 // Phase 1: Enumerate all UDT types in the PDB (fast scan, no recursive import).

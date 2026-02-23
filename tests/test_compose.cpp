@@ -1,4 +1,6 @@
 #include <QtTest/QTest>
+#include <QJsonDocument>
+#include <QFile>
 #include "core.h"
 
 using namespace rcx;
@@ -1981,6 +1983,371 @@ private slots:
         for (int i = 0; i < lines.size(); i++) {
             QVERIFY2(!lines[i].isEmpty(),
                      qPrintable(QString("Line %1 is empty").arg(i)));
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // Union tests
+    // ═════════════════════════════════════════════════════════════
+
+    void testUnionHeaderShowsKeyword() {
+        // Union (Struct with classKeyword="union") should display "union" in header
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        // Union container
+        Node u;
+        u.kind = NodeKind::Struct;
+        u.classKeyword = "union";
+        u.name = "u1";
+        u.parentId = rootId;
+        u.offset = 0;
+        int ui = tree.addNode(u);
+        uint64_t uId = tree.nodes[ui].id;
+
+        // Two members at offset 0
+        Node m1;
+        m1.kind = NodeKind::UInt32;
+        m1.name = "asInt";
+        m1.parentId = uId;
+        m1.offset = 0;
+        tree.addNode(m1);
+
+        Node m2;
+        m2.kind = NodeKind::Float;
+        m2.name = "asFloat";
+        m2.parentId = uId;
+        m2.offset = 0;
+        tree.addNode(m2);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+        QStringList lines = result.text.split('\n');
+
+        // Find the union header line
+        int headerLine = -1;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::Header &&
+                result.meta[i].nodeKind == NodeKind::Struct &&
+                result.meta[i].depth == 1) {
+                headerLine = i;
+                break;
+            }
+        }
+        QVERIFY(headerLine >= 0);
+        QVERIFY2(lines[headerLine].contains("union"),
+                 qPrintable("Union header should contain 'union': " + lines[headerLine]));
+
+        // Both members should be rendered at depth 2
+        int memberCount = 0;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::Field && result.meta[i].depth == 2)
+                memberCount++;
+        }
+        QCOMPARE(memberCount, 2);
+
+        // Both members share the same offset text (both at 0000)
+        QVector<int> memberLines;
+        for (int i = 0; i < result.meta.size(); i++) {
+            if (result.meta[i].lineKind == LineKind::Field && result.meta[i].depth == 2)
+                memberLines.append(i);
+        }
+        QCOMPARE(memberLines.size(), 2);
+        QCOMPARE(result.meta[memberLines[0]].offsetText,
+                 result.meta[memberLines[1]].offsetText);
+    }
+
+    void testUnionCollapsed() {
+        // Collapsed union should hide children
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node u;
+        u.kind = NodeKind::Struct;
+        u.classKeyword = "union";
+        u.name = "u1";
+        u.parentId = rootId;
+        u.offset = 0;
+        u.collapsed = true;
+        int ui = tree.addNode(u);
+        uint64_t uId = tree.nodes[ui].id;
+
+        Node m;
+        m.kind = NodeKind::UInt64;
+        m.name = "val";
+        m.parentId = uId;
+        m.offset = 0;
+        tree.addNode(m);
+
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov);
+
+        // No field lines at depth 2
+        int deepFields = 0;
+        for (const auto& lm : result.meta) {
+            if (lm.lineKind == LineKind::Field && lm.depth >= 2)
+                deepFields++;
+        }
+        QCOMPARE(deepFields, 0);
+    }
+
+    void testUnionStructSpan() {
+        // structSpan of a union = max(child offset + size), not sum
+        NodeTree tree;
+
+        Node u;
+        u.kind = NodeKind::Struct;
+        u.classKeyword = "union";
+        u.name = "U";
+        u.parentId = 0;
+        u.offset = 0;
+        int ui = tree.addNode(u);
+        uint64_t uId = tree.nodes[ui].id;
+
+        // 2-byte member
+        Node m1;
+        m1.kind = NodeKind::UInt16;
+        m1.name = "small";
+        m1.parentId = uId;
+        m1.offset = 0;
+        tree.addNode(m1);
+
+        // 8-byte member
+        Node m2;
+        m2.kind = NodeKind::UInt64;
+        m2.name = "big";
+        m2.parentId = uId;
+        m2.offset = 0;
+        tree.addNode(m2);
+
+        // structSpan = max(0+2, 0+8) = 8
+        QCOMPARE(tree.structSpan(uId), 8);
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // Enum compose tests
+    // ═════════════════════════════════════════════════════════════
+
+    void testEnumDisplaysMembers() {
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node e;
+        e.kind = NodeKind::Struct;
+        e.classKeyword = "enum";
+        e.name = "Color";
+        e.structTypeName = "Color";
+        e.parentId = rootId;
+        e.offset = 0;
+        e.collapsed = false;
+        e.enumMembers = {{"Red", 0}, {"Green", 1}, {"Blue", 2}};
+        tree.addNode(e);
+
+        NullProvider prov;
+        auto result = compose(tree, prov);
+
+        // Should have enum members in the text
+        QVERIFY(result.text.contains("Red"));
+        QVERIFY(result.text.contains("Green"));
+        QVERIFY(result.text.contains("Blue"));
+        QVERIFY(result.text.contains("= 0"));
+        QVERIFY(result.text.contains("= 2"));
+        // Header should contain "enum"
+        QVERIFY(result.text.contains("enum"));
+    }
+
+    void testEnumCollapsed() {
+        NodeTree tree;
+        tree.baseAddress = 0;
+
+        Node root;
+        root.kind = NodeKind::Struct;
+        root.name = "Root";
+        root.parentId = 0;
+        int ri = tree.addNode(root);
+        uint64_t rootId = tree.nodes[ri].id;
+
+        Node e;
+        e.kind = NodeKind::Struct;
+        e.classKeyword = "enum";
+        e.name = "Flags";
+        e.structTypeName = "Flags";
+        e.parentId = rootId;
+        e.offset = 0;
+        e.collapsed = true;
+        e.enumMembers = {{"A", 0}, {"B", 1}};
+        tree.addNode(e);
+
+        NullProvider prov;
+        auto result = compose(tree, prov);
+
+        // Collapsed: members should NOT appear
+        QVERIFY(!result.text.contains("= 0"));
+        QVERIFY(!result.text.contains("= 1"));
+        // But header should still show
+        QVERIFY(result.text.contains("enum"));
+        QVERIFY(result.text.contains("Flags"));
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    // Compact columns: load EPROCESS.rcx and compare output
+    // ═════════════════════════════════════════════════════════════
+
+    void testCompactColumnsEprocess() {
+        // Load the EPROCESS example .rcx
+        // Try multiple paths: build dir examples, or source dir
+        QString rcxPath;
+        QStringList candidates = {
+            QCoreApplication::applicationDirPath() + "/examples/EPROCESS.rcx",
+            QCoreApplication::applicationDirPath() + "/../src/examples/EPROCESS.rcx",
+        };
+        for (const auto& c : candidates) {
+            if (QFile::exists(c)) { rcxPath = c; break; }
+        }
+        if (rcxPath.isEmpty())
+            QSKIP("EPROCESS.rcx not found");
+        QFile file(rcxPath);
+        QVERIFY2(file.open(QIODevice::ReadOnly),
+                 qPrintable("Cannot open " + rcxPath));
+        QJsonDocument jdoc = QJsonDocument::fromJson(file.readAll());
+        NodeTree tree = NodeTree::fromJson(jdoc.object());
+        NullProvider prov;
+
+        // Compose WITHOUT compact (default)
+        ComposeResult normal = compose(tree, prov, 0, false);
+        // Compose WITH compact
+        ComposeResult compact = compose(tree, prov, 0, true);
+
+        // Compact typeW should be capped at kCompactTypeW (22)
+        QVERIFY2(compact.layout.typeW <= kCompactTypeW,
+                 qPrintable(QString("compact typeW=%1, expected <= %2")
+                            .arg(compact.layout.typeW).arg(kCompactTypeW)));
+
+        // Normal typeW should be wider (the _EPROCESS has long type names)
+        QVERIFY2(normal.layout.typeW > compact.layout.typeW,
+                 qPrintable(QString("normal typeW=%1 should exceed compact typeW=%2")
+                            .arg(normal.layout.typeW).arg(compact.layout.typeW)));
+
+        // Print side-by-side sample for visual inspection
+        QStringList normalLines  = normal.text.split('\n');
+        QStringList compactLines = compact.text.split('\n');
+        qDebug() << "\n=== EPROCESS compact columns comparison ===";
+        qDebug() << "Normal typeW:" << normal.layout.typeW
+                 << " Compact typeW:" << compact.layout.typeW;
+        qDebug() << "Normal lines:" << normalLines.size()
+                 << " Compact lines:" << compactLines.size();
+
+        // Dump full output to files for visual diffing
+        {
+            QFile nf(QCoreApplication::applicationDirPath() + "/../eprocess_normal.txt");
+            nf.open(QIODevice::WriteOnly);
+            nf.write(normal.text.toUtf8());
+        }
+        {
+            QFile cf(QCoreApplication::applicationDirPath() + "/../eprocess_compact.txt");
+            cf.open(QIODevice::WriteOnly);
+            cf.write(compact.text.toUtf8());
+        }
+        qDebug() << "Wrote eprocess_normal.txt and eprocess_compact.txt";
+
+        // Show first 50 lines of each for quick inspection
+        qDebug() << "\n--- NORMAL (first 50 lines) ---";
+        for (int i = 0; i < qMin(50, normalLines.size()); ++i)
+            qDebug().noquote() << normalLines[i];
+
+        qDebug() << "\n--- COMPACT (first 50 lines) ---";
+        for (int i = 0; i < qMin(50, compactLines.size()); ++i)
+            qDebug().noquote() << compactLines[i];
+
+        // Overflow types should print in full (no truncation)
+        bool foundFull = false;
+        for (const QString& l : compactLines) {
+            if (l.contains("_PS_DYNAMIC_ENFORCED_ADDRESS_RANGES")) {
+                foundFull = true;
+                break;
+            }
+        }
+        QVERIFY2(foundFull,
+                 "Long type _PS_DYNAMIC_ENFORCED_ADDRESS_RANGES should print in full (no truncation)");
+    }
+
+    void testMmpfnRcxLoadsAndComposes() {
+        // Load the MMPFN.rcx example file and verify it composes without errors
+        // Try several paths to find the .rcx file
+        QString rcxPath;
+        for (const auto& p : {
+                QStringLiteral("../src/examples/MMPFN.rcx"),
+                QStringLiteral("../../src/examples/MMPFN.rcx"),
+                QStringLiteral("src/examples/MMPFN.rcx")}) {
+            if (QFile::exists(p)) { rcxPath = p; break; }
+        }
+        if (rcxPath.isEmpty()) {
+            QSKIP("MMPFN.rcx not found (run from build dir)");
+        }
+        QFile f(rcxPath);
+        QVERIFY2(f.open(QIODevice::ReadOnly), "Cannot open MMPFN.rcx");
+        QJsonDocument jdoc = QJsonDocument::fromJson(f.readAll());
+        QVERIFY(jdoc.isObject());
+        NodeTree tree = NodeTree::fromJson(jdoc.object());
+
+        QVERIFY2(tree.nodes.size() >= 60, "Expected at least 60 nodes");
+
+        // Check key top-level types exist
+        bool hasMmpfn = false, hasListEntry = false, hasMmpte = false;
+        for (const auto& n : tree.nodes) {
+            if (n.parentId == 0 && n.structTypeName == "_MMPFN") hasMmpfn = true;
+            if (n.parentId == 0 && n.structTypeName == "_LIST_ENTRY") hasListEntry = true;
+            if (n.parentId == 0 && n.structTypeName == "_MMPTE") hasMmpte = true;
+        }
+        QVERIFY2(hasMmpfn, "Missing _MMPFN top-level type");
+        QVERIFY2(hasListEntry, "Missing _LIST_ENTRY top-level type");
+        QVERIFY2(hasMmpte, "Missing _MMPTE top-level type");
+
+        // Compose and verify output
+        NullProvider prov;
+        ComposeResult result = compose(tree, prov, 0, false);
+        QStringList lines = result.text.split('\n');
+        QVERIFY2(lines.size() > 10, "Expected non-trivial compose output");
+
+        // Print first 30 lines for manual inspection
+        qDebug() << "=== MMPFN compose output ===";
+        for (int i = 0; i < qMin(30, lines.size()); ++i)
+            qDebug().noquote() << lines[i];
+        qDebug() << "... total lines:" << lines.size();
+
+        // Verify _MMPFN header appears in output
+        bool foundMmpfn = false;
+        for (const auto& l : lines) {
+            if (l.contains("_MMPFN")) { foundMmpfn = true; break; }
+        }
+        QVERIFY2(foundMmpfn, "Compose output should contain _MMPFN");
+
+        // Verify no M_CYCLE markers on any lines (all self-ref pointers are collapsed)
+        for (int i = 0; i < result.meta.size(); i++) {
+            bool hasCycle = (result.meta[i].markerMask & (1u << M_CYCLE)) != 0;
+            QVERIFY2(!hasCycle,
+                     qPrintable(QString("Unexpected cycle marker on line %1").arg(i)));
         }
     }
 

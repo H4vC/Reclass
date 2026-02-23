@@ -234,6 +234,7 @@ struct PdbCtx {
     QHash<uint32_t, uint64_t> typeCache; // typeIndex → nodeId
 
     uint64_t importUDT(uint32_t typeIndex);
+    uint64_t importEnum(uint32_t typeIndex);
     void importFieldList(uint32_t fieldListIndex, uint64_t parentId);
     void importMemberType(uint32_t typeIndex, int offset, const QString& name, uint64_t parentId);
 
@@ -297,6 +298,59 @@ uint64_t PdbCtx::importUDT(uint32_t typeIndex) {
     typeCache[typeIndex] = nodeId;
 
     importFieldList(fieldListIndex, nodeId);
+    return nodeId;
+}
+
+uint64_t PdbCtx::importEnum(uint32_t typeIndex) {
+    if (typeIndex < tt->firstIndex()) return 0;
+
+    auto it = typeCache.find(typeIndex);
+    if (it != typeCache.end()) return it.value();
+
+    const auto* rec = tt->get(typeIndex);
+    if (!rec || rec->header.kind != TRK::LF_ENUM) return 0;
+    if (rec->data.LF_ENUM.property.fwdref) return 0;
+
+    QString qname = rec->data.LF_ENUM.name
+        ? QString::fromUtf8(rec->data.LF_ENUM.name)
+        : QStringLiteral("<anon>");
+
+    Node s;
+    s.kind = NodeKind::Struct;
+    s.name = qname;
+    s.structTypeName = qname;
+    s.classKeyword = QStringLiteral("enum");
+    s.parentId = 0;
+    s.collapsed = true;
+
+    // Extract enum members from field list
+    uint32_t fieldListIndex = rec->data.LF_ENUM.field;
+    const auto* flRec = tt->get(fieldListIndex);
+    if (flRec && flRec->header.kind == TRK::LF_FIELDLIST) {
+        auto maxSize = flRec->header.size - sizeof(uint16_t);
+        for (size_t i = 0; i < maxSize; ) {
+            auto* field = reinterpret_cast<const PDB::CodeView::TPI::FieldList*>(
+                reinterpret_cast<const uint8_t*>(&flRec->data.LF_FIELD.list) + i);
+            if (field->kind != TRK::LF_ENUMERATE) break;
+
+            int64_t val = static_cast<int64_t>(leafValue(
+                field->data.LF_ENUMERATE.value,
+                field->data.LF_ENUMERATE.lfEasy.kind));
+            const char* eName = leafName(
+                field->data.LF_ENUMERATE.value,
+                field->data.LF_ENUMERATE.lfEasy.kind);
+            if (eName)
+                s.enumMembers.append({QString::fromUtf8(eName), val});
+
+            i += static_cast<size_t>(eName - reinterpret_cast<const char*>(field));
+            i += strnlen(eName, maxSize - i - 1) + 1;
+            i = (i + 3) & ~size_t(3);
+        }
+    }
+
+    int idx = tree.addNode(s);
+    uint64_t nodeId = tree.nodes[idx].id;
+    typeCache[typeIndex] = nodeId;
     return nodeId;
 }
 
@@ -707,8 +761,9 @@ void PdbCtx::importMemberType(uint32_t typeIndex, int offset, const QString& nam
     }
 
     case TRK::LF_ENUM: {
-        // Map enum to its underlying integer type
+        // Map enum to its underlying integer type, link to enum definition
         uint32_t utype = rec->data.LF_ENUM.utype;
+        uint64_t enumNodeId = importEnum(typeIndex);
         Node n;
         if (utype < tt->firstIndex()) {
             n.kind = mapPrimitiveType(utype);
@@ -718,6 +773,7 @@ void PdbCtx::importMemberType(uint32_t typeIndex, int offset, const QString& nam
         n.name = name;
         n.parentId = parentId;
         n.offset = offset;
+        n.refId = enumNodeId;
         tree.addNode(n);
         break;
     }
@@ -823,14 +879,27 @@ QVector<PdbTypeInfo> enumeratePdbTypes(const QString& pdbPath, QString* errorMsg
         bool isUDT = (rec->header.kind == TRK::LF_STRUCTURE ||
                       rec->header.kind == TRK::LF_CLASS ||
                       rec->header.kind == TRK::LF_UNION);
-        if (!isUDT) continue;
+        bool isEnum = (rec->header.kind == TRK::LF_ENUM);
+        if (!isUDT && !isEnum) continue;
 
         const char* name = nullptr;
         uint16_t fieldCount = 0;
         bool isUnion = false;
         uint64_t size = 0;
 
-        if (rec->header.kind == TRK::LF_UNION) {
+        if (isEnum) {
+            if (rec->data.LF_ENUM.property.fwdref) continue;
+            fieldCount = rec->data.LF_ENUM.count;
+            name = rec->data.LF_ENUM.name;
+            // Size from underlying type
+            uint32_t ut = rec->data.LF_ENUM.utype;
+            if (ut < tt.firstIndex()) {
+                NodeKind ek = mapPrimitiveType(ut);
+                size = sizeForKind(ek);
+            } else {
+                size = 4;
+            }
+        } else if (rec->header.kind == TRK::LF_UNION) {
             if (rec->data.LF_UNION.property.fwdref) continue;
             isUnion = true;
             fieldCount = rec->data.LF_UNION.count;
@@ -856,6 +925,7 @@ QVector<PdbTypeInfo> enumeratePdbTypes(const QString& pdbPath, QString* errorMsg
         info.size = size;
         info.childCount = fieldCount;
         info.isUnion = isUnion;
+        info.isEnum = isEnum;
         result.append(info);
     }
 
@@ -876,7 +946,12 @@ NodeTree importPdbSelected(const QString& pdbPath,
 
     int total = typeIndices.size();
     for (int i = 0; i < total; i++) {
-        ctx.importUDT(typeIndices[i]);
+        uint32_t ti = typeIndices[i];
+        const auto* rec = pdb.typeTable->get(ti);
+        if (rec && rec->header.kind == TRK::LF_ENUM)
+            ctx.importEnum(ti);
+        else
+            ctx.importUDT(ti);
         if (progressCb && !progressCb(i + 1, total)) {
             if (errorMsg) *errorMsg = QStringLiteral("Import cancelled");
             return ctx.tree; // return partial result

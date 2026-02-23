@@ -22,6 +22,7 @@ struct ComposeState {
     int                nameW       = kColName;  // global name column width (fallback)
     int                offsetHexDigits = 8;     // hex digit tier for offset margin
     bool               baseEmitted = false;     // only first root struct shows base address
+    bool               compactColumns = false;  // compact column mode: cap type width, overflow long types
     uint64_t           currentPtrBase = 0;      // absolute addr of current pointer expansion target
 
     // Precomputed for O(1) lookups
@@ -132,6 +133,11 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         }
     }
 
+    // Detect type overflow in compact mode (for effectiveTypeW)
+    QString rawType = ptrTypeOverride.isEmpty() ? fmt::typeNameRaw(node.kind) : ptrTypeOverride;
+    bool typeOverflow = state.compactColumns && rawType.size() > typeW;
+    int lineTypeW = typeOverflow ? rawType.size() : typeW;
+
     for (int sub = 0; sub < numLines; sub++) {
         bool isCont = (sub > 0);
 
@@ -148,7 +154,7 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         lm.ptrBase         = state.currentPtrBase;
         lm.markerMask      = computeMarkers(node, prov, absAddr, isCont, depth);
         lm.foldLevel       = computeFoldLevel(depth, false);
-        lm.effectiveTypeW  = typeW;
+        lm.effectiveTypeW  = lineTypeW;
         lm.effectiveNameW  = nameW;
         lm.pointerTargetName = ptrTargetName;
 
@@ -158,7 +164,8 @@ void composeLeaf(ComposeState& state, const NodeTree& tree,
         }
 
         QString lineText = fmt::fmtNodeLine(node, prov, absAddr, depth, sub,
-                                            /*comment=*/{}, typeW, nameW, ptrTypeOverride);
+                                            /*comment=*/{}, typeW, nameW, ptrTypeOverride,
+                                            state.compactColumns);
         state.emitLine(lineText, lm);
     }
 }
@@ -248,8 +255,6 @@ void composeParent(ComposeState& state, const NodeTree& tree,
         lm.foldCollapsed = node.collapsed;
         lm.foldLevel  = computeFoldLevel(depth, true);
         lm.markerMask = (1u << M_STRUCT_BG);
-        lm.effectiveTypeW = typeW;
-        lm.effectiveNameW = nameW;
 
         QString headerText;
         if (node.kind == NodeKind::Array) {
@@ -260,15 +265,68 @@ void composeParent(ComposeState& state, const NodeTree& tree,
             lm.arrayCount    = node.arrayLen;
             QString elemStructName = (node.elementKind == NodeKind::Struct)
                 ? resolvePointerTarget(tree, node.refId) : QString();
-            headerText = fmt::fmtArrayHeader(node, depth, node.viewIndex, node.collapsed, typeW, nameW, elemStructName);
+            QString rawType = fmt::arrayTypeName(node.elementKind, node.arrayLen, elemStructName);
+            bool overflow = state.compactColumns && rawType.size() > typeW;
+            lm.effectiveTypeW = overflow ? rawType.size() : typeW;
+            lm.effectiveNameW = nameW;
+            headerText = fmt::fmtArrayHeader(node, depth, node.viewIndex, node.collapsed, typeW, nameW, elemStructName, state.compactColumns);
         } else {
             // All structs (root and nested) use the same header format
-            headerText = fmt::fmtStructHeader(node, depth, node.collapsed, typeW, nameW);
+            QString rawType = fmt::structTypeName(node);
+            bool overflow = state.compactColumns && rawType.size() > typeW;
+            lm.effectiveTypeW = overflow ? rawType.size() : typeW;
+            lm.effectiveNameW = nameW;
+            headerText = fmt::fmtStructHeader(node, depth, node.collapsed, typeW, nameW, state.compactColumns);
         }
         state.emitLine(headerText, lm);
     }
 
     if (!node.collapsed || isArrayChild || isRootHeader) {
+        // Enum with members: render name = value lines instead of offset-based fields
+        if (node.resolvedClassKeyword() == QStringLiteral("enum") && !node.enumMembers.isEmpty()) {
+            int childDepth = depth + 1;
+            int maxNameLen = 4;
+            for (const auto& m : node.enumMembers)
+                maxNameLen = qMax(maxNameLen, (int)m.first.size());
+
+            for (int mi = 0; mi < node.enumMembers.size(); mi++) {
+                const auto& m = node.enumMembers[mi];
+                LineMeta lm;
+                lm.nodeIdx    = nodeIdx;
+                lm.nodeId     = node.id;
+                lm.subLine    = mi;
+                lm.depth      = childDepth;
+                lm.lineKind   = LineKind::Field;
+                lm.nodeKind   = NodeKind::UInt32;
+                lm.foldLevel  = computeFoldLevel(childDepth, false);
+                lm.markerMask = 0;
+                lm.offsetText = fmt::fmtOffsetMargin(absAddr, true, state.offsetHexDigits);
+                lm.offsetAddr = absAddr;
+                lm.ptrBase    = state.currentPtrBase;
+                state.emitLine(fmt::fmtEnumMember(m.first, m.second, childDepth, maxNameLen), lm);
+            }
+
+            // Footer
+            if (!isArrayChild) {
+                LineMeta lm;
+                lm.nodeIdx   = nodeIdx;
+                lm.nodeId    = node.id;
+                lm.depth     = depth;
+                lm.lineKind  = LineKind::Footer;
+                lm.nodeKind  = node.kind;
+                lm.isRootHeader = isRootHeader;
+                lm.foldLevel = computeFoldLevel(depth, false);
+                lm.markerMask = 0;
+                lm.offsetText = fmt::fmtOffsetMargin(absAddr, false, state.offsetHexDigits);
+                lm.offsetAddr = absAddr;
+                lm.ptrBase    = state.currentPtrBase;
+                state.emitLine(fmt::fmtStructFooter(node, depth, 0), lm);
+            }
+
+            state.visiting.remove(node.id);
+            return;
+        }
+
         QVector<int> children = state.childMap.value(node.id);
         std::sort(children.begin(), children.end(), [&](int a, int b) {
             return tree.nodes[a].offset < tree.nodes[b].offset;
@@ -309,11 +367,13 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                 lm.ptrBase    = state.currentPtrBase;
                 lm.markerMask = computeMarkers(elem, prov, elemAddr, false, childDepth);
                 lm.foldLevel  = computeFoldLevel(childDepth, false);
-                lm.effectiveTypeW = eTW;
+                bool elemOverflow = state.compactColumns && elemTypeStr.size() > eTW;
+                lm.effectiveTypeW = elemOverflow ? elemTypeStr.size() : eTW;
                 lm.effectiveNameW = eNW;
 
                 state.emitLine(fmt::fmtNodeLine(elem, prov, elemAddr, childDepth, 0,
-                                                {}, eTW, eNW, elemTypeStr), lm);
+                                                {}, eTW, eNW, elemTypeStr,
+                                                state.compactColumns), lm);
             }
         }
 
@@ -351,6 +411,8 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                     if (state.visiting.contains(child.id)) {
                         int typeW = state.effectiveTypeW(refScopeId);
                         int nameW = state.effectiveNameW(refScopeId);
+                        QString rawType = fmt::structTypeName(child);
+                        bool overflow = state.compactColumns && rawType.size() > typeW;
                         LineMeta lm;
                         lm.nodeIdx    = nodeIdx;  // parent struct — materialize target
                         lm.nodeId     = child.id;
@@ -366,10 +428,10 @@ void composeParent(ComposeState& state, const NodeTree& tree,
                         lm.foldCollapsed = true;
                         lm.foldLevel  = computeFoldLevel(childDepth, true);
                         lm.markerMask = (1u << M_STRUCT_BG) | (1u << M_CYCLE);
-                        lm.effectiveTypeW = typeW;
+                        lm.effectiveTypeW = overflow ? rawType.size() : typeW;
                         lm.effectiveNameW = nameW;
                         state.emitLine(fmt::fmtStructHeader(child, childDepth,
-                            /*collapsed=*/true, typeW, nameW), lm);
+                            /*collapsed=*/true, typeW, nameW, state.compactColumns), lm);
                         continue;
                     }
                     composeNode(state, tree, prov, childIdx, childDepth,
@@ -458,12 +520,13 @@ void composeNode(ComposeState& state, const NodeTree& tree,
             lm.foldLevel  = computeFoldLevel(depth, true);
             lm.markerMask = computeMarkers(node, prov, absAddr, false, depth);
             if (forceCollapsed) lm.markerMask |= (1u << M_CYCLE);
-            lm.effectiveTypeW = typeW;
+            bool ptrOverflow = state.compactColumns && ptrTypeOverride.size() > typeW;
+            lm.effectiveTypeW = ptrOverflow ? ptrTypeOverride.size() : typeW;
             lm.effectiveNameW = nameW;
             lm.pointerTargetName = ptrTargetName;
             state.emitLine(fmt::fmtPointerHeader(node, depth, effectiveCollapsed,
                                                   prov, absAddr, ptrTypeOverride,
-                                                  typeW, nameW), lm);
+                                                  typeW, nameW, state.compactColumns), lm);
         }
 
         if (!effectiveCollapsed) {
@@ -558,8 +621,10 @@ void composeNode(ComposeState& state, const NodeTree& tree,
 
 } // anonymous namespace
 
-ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewRootId) {
+ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewRootId,
+                      bool compactColumns) {
     ComposeState state;
+    state.compactColumns = compactColumns;
 
     // Precompute parent→children map
     for (int i = 0; i < tree.nodes.size(); i++)
@@ -599,11 +664,12 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
 
     // Compute effective type column width from longest type name
     // Include struct/array headers which use "struct TypeName" or "type[count]" format
+    const int typeCap = state.compactColumns ? kCompactTypeW : kMaxTypeW;
     int maxTypeLen = kMinTypeW;
     for (const Node& node : tree.nodes) {
         maxTypeLen = qMax(maxTypeLen, (int)nodeTypeName(node).size());
     }
-    state.typeW = qBound(kMinTypeW, maxTypeLen, kMaxTypeW);
+    state.typeW = qBound(kMinTypeW, maxTypeLen, typeCap);
 
     // Compute effective name column width from longest name
     // Include struct/array names - they now use columnar layout too
@@ -647,7 +713,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
             scopeMaxType = qMax(scopeMaxType, (int)longestElemType.size());
         }
 
-        state.scopeTypeW[container.id] = qBound(kMinTypeW, scopeMaxType, kMaxTypeW);
+        state.scopeTypeW[container.id] = qBound(kMinTypeW, scopeMaxType, typeCap);
         state.scopeNameW[container.id] = qBound(kMinNameW, scopeMaxName, kMaxNameW);
     }
 
@@ -665,7 +731,7 @@ ComposeResult compose(const NodeTree& tree, const Provider& prov, uint64_t viewR
                 rootMaxName = qMax(rootMaxName, (int)child.name.size());
             }
         }
-        state.scopeTypeW[0] = qBound(kMinTypeW, rootMaxType, kMaxTypeW);
+        state.scopeTypeW[0] = qBound(kMinTypeW, rootMaxType, typeCap);
         state.scopeNameW[0] = qBound(kMinNameW, rootMaxName, kMaxNameW);
     }
 

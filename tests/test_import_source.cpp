@@ -49,7 +49,9 @@ private slots:
     void forwardDeclaration();
 
     // Union handling
-    void unionPickFirst();
+    void unionContainer();
+    void unionWithCommentOffsets();
+    void namedUnion();
 
     // Padding fields
     void paddingFieldExpansion();
@@ -69,10 +71,18 @@ private slots:
 
     // Edge cases
     void bitfieldSkipped();
+    void bitfieldWithOffsetsEmitsHex();
     void hexArraySizes();
     void windowsStylePEB();
     void classKeyword();
     void inheritanceSkipped();
+
+    // Enum tests
+    void enumBasic();
+    void enumAutoValues();
+    void enumHexValues();
+    void enumInStruct();
+    void enumClass();
 
     // Round-trip test (requires generator.h)
     void basicRoundTrip();
@@ -575,7 +585,7 @@ void TestImportSource::forwardDeclaration() {
     QVERIFY(tree.nodes[kids[0]].refId != 0);
 }
 
-void TestImportSource::unionPickFirst() {
+void TestImportSource::unionContainer() {
     NodeTree tree = importFromSource(QStringLiteral(
         "struct WithUnion {\n"
         "    union {\n"
@@ -586,12 +596,85 @@ void TestImportSource::unionPickFirst() {
         "};\n"
     ));
     auto kids = childrenOf(tree, tree.nodes[0].id);
-    // Should have 2 fields: asFloat (first union member) + after
+    // Should have 2 direct children: union container + after
     QCOMPARE(kids.size(), 2);
-    QCOMPARE(tree.nodes[kids[0]].kind, NodeKind::Float);
-    QCOMPARE(tree.nodes[kids[0]].name, QStringLiteral("asFloat"));
+
+    // First child is the union container
+    const auto& unionNode = tree.nodes[kids[0]];
+    QCOMPARE(unionNode.kind, NodeKind::Struct);
+    QCOMPARE(unionNode.classKeyword, QStringLiteral("union"));
+    QCOMPARE(unionNode.offset, 0);
+
+    // Union has 2 children, both at offset 0
+    auto unionKids = childrenOf(tree, unionNode.id);
+    QCOMPARE(unionKids.size(), 2);
+    QCOMPARE(tree.nodes[unionKids[0]].kind, NodeKind::Float);
+    QCOMPARE(tree.nodes[unionKids[0]].name, QStringLiteral("asFloat"));
+    QCOMPARE(tree.nodes[unionKids[0]].offset, 0);
+    QCOMPARE(tree.nodes[unionKids[1]].kind, NodeKind::UInt32);
+    QCOMPARE(tree.nodes[unionKids[1]].name, QStringLiteral("asInt"));
+    QCOMPARE(tree.nodes[unionKids[1]].offset, 0);
+
+    // structSpan of union = max member size = 4
+    QCOMPARE(tree.structSpan(unionNode.id), 4);
+
+    // after field follows the union at offset 4
     QCOMPARE(tree.nodes[kids[1]].kind, NodeKind::Int32);
     QCOMPARE(tree.nodes[kids[1]].name, QStringLiteral("after"));
+    QCOMPARE(tree.nodes[kids[1]].offset, 4);
+}
+
+void TestImportSource::unionWithCommentOffsets() {
+    NodeTree tree = importFromSource(QStringLiteral(
+        "struct S {\n"
+        "    uint64_t a; // 0x0\n"
+        "    union {\n"
+        "        uint32_t x; // 0x8\n"
+        "        float y; // 0x8\n"
+        "    };\n"
+        "    uint32_t b; // 0xC\n"
+        "};\n"
+    ));
+    auto kids = childrenOf(tree, tree.nodes[0].id);
+    QCOMPARE(kids.size(), 3); // a + union + b
+
+    // Union at offset 0x8
+    const auto& unionNode = tree.nodes[kids[1]];
+    QCOMPARE(unionNode.kind, NodeKind::Struct);
+    QCOMPARE(unionNode.classKeyword, QStringLiteral("union"));
+    QCOMPARE(unionNode.offset, 0x8);
+
+    // Union members at offset 0 (relative to union)
+    auto unionKids = childrenOf(tree, unionNode.id);
+    QCOMPARE(unionKids.size(), 2);
+    QCOMPARE(tree.nodes[unionKids[0]].offset, 0);
+    QCOMPARE(tree.nodes[unionKids[1]].offset, 0);
+
+    // b at 0xC
+    QCOMPARE(tree.nodes[kids[2]].offset, 0xC);
+}
+
+void TestImportSource::namedUnion() {
+    NodeTree tree = importFromSource(QStringLiteral(
+        "struct S {\n"
+        "    union {\n"
+        "        uint16_t shortVal;\n"
+        "        uint64_t longVal;\n"
+        "    } u3;\n"
+        "};\n"
+    ));
+    auto kids = childrenOf(tree, tree.nodes[0].id);
+    QCOMPARE(kids.size(), 1);
+
+    const auto& unionNode = tree.nodes[kids[0]];
+    QCOMPARE(unionNode.kind, NodeKind::Struct);
+    QCOMPARE(unionNode.classKeyword, QStringLiteral("union"));
+    QCOMPARE(unionNode.name, QStringLiteral("u3"));
+
+    auto unionKids = childrenOf(tree, unionNode.id);
+    QCOMPARE(unionKids.size(), 2);
+    // structSpan = max(2, 8) = 8
+    QCOMPARE(tree.structSpan(unionNode.id), 8);
 }
 
 void TestImportSource::paddingFieldExpansion() {
@@ -697,6 +780,7 @@ void TestImportSource::structPrefixOnType() {
 }
 
 void TestImportSource::bitfieldSkipped() {
+    // Bitfields emit a hex placeholder covering the group
     NodeTree tree = importFromSource(QStringLiteral(
         "struct BF {\n"
         "    uint32_t normal;\n"
@@ -706,10 +790,38 @@ void TestImportSource::bitfieldSkipped() {
         "};\n"
     ));
     auto kids = childrenOf(tree, tree.nodes[0].id);
-    // Bitfields should be skipped, only normal + after
-    QCOMPARE(kids.size(), 2);
+    // normal + Hex16 (16 bits → 2 bytes) + after
+    QCOMPARE(kids.size(), 3);
     QCOMPARE(tree.nodes[kids[0]].name, QStringLiteral("normal"));
-    QCOMPARE(tree.nodes[kids[1]].name, QStringLiteral("after"));
+    QCOMPARE(tree.nodes[kids[0]].offset, 0);
+    QCOMPARE(tree.nodes[kids[1]].kind, NodeKind::Hex16);
+    QCOMPARE(tree.nodes[kids[1]].offset, 4);
+    QCOMPARE(tree.nodes[kids[2]].name, QStringLiteral("after"));
+    QCOMPARE(tree.nodes[kids[2]].offset, 6);
+}
+
+void TestImportSource::bitfieldWithOffsetsEmitsHex() {
+    NodeTree tree = importFromSource(QStringLiteral(
+        "struct BF2 {\n"
+        "    uint32_t normal; // 0x0\n"
+        "    ULONGLONG Valid : 1; // 0x4\n"
+        "    ULONGLONG Dirty : 1; // 0x4\n"
+        "    ULONGLONG PageFrameNumber : 36; // 0x4\n"
+        "    ULONGLONG Reserved : 26; // 0x4\n"
+        "    uint32_t after; // 0xC\n"
+        "};\n"
+    ));
+    auto kids = childrenOf(tree, tree.nodes[0].id);
+    // normal + hex64 (bitfield group: 64 bits) + after = 3
+    QCOMPARE(kids.size(), 3);
+    QCOMPARE(tree.nodes[kids[0]].name, QStringLiteral("normal"));
+    QCOMPARE(tree.nodes[kids[0]].offset, 0);
+    // Bitfield group emitted as Hex64 at offset 4
+    QCOMPARE(tree.nodes[kids[1]].kind, NodeKind::Hex64);
+    QCOMPARE(tree.nodes[kids[1]].offset, 4);
+    // after at 0xC
+    QCOMPARE(tree.nodes[kids[2]].name, QStringLiteral("after"));
+    QCOMPARE(tree.nodes[kids[2]].offset, 0xC);
 }
 
 void TestImportSource::hexArraySizes() {
@@ -840,6 +952,79 @@ void TestImportSource::basicRoundTrip() {
         QCOMPARE(reimported.nodes[reimpKids[i]].name, original.nodes[origKids[i]].name);
         QCOMPARE(reimported.nodes[reimpKids[i]].offset, original.nodes[origKids[i]].offset);
     }
+}
+
+// ── Enum tests ──
+
+void TestImportSource::enumBasic() {
+    auto tree = importFromSource(QStringLiteral(
+        "enum Color { Red = 0, Green = 1, Blue = 2 };"));
+    QCOMPARE(countRoots(tree), 1);
+    QCOMPARE(tree.nodes[0].classKeyword, QStringLiteral("enum"));
+    QCOMPARE(tree.nodes[0].structTypeName, QStringLiteral("Color"));
+    QCOMPARE(tree.nodes[0].enumMembers.size(), 3);
+    QCOMPARE(tree.nodes[0].enumMembers[0].first, QStringLiteral("Red"));
+    QCOMPARE(tree.nodes[0].enumMembers[0].second, 0LL);
+    QCOMPARE(tree.nodes[0].enumMembers[1].first, QStringLiteral("Green"));
+    QCOMPARE(tree.nodes[0].enumMembers[1].second, 1LL);
+    QCOMPARE(tree.nodes[0].enumMembers[2].first, QStringLiteral("Blue"));
+    QCOMPARE(tree.nodes[0].enumMembers[2].second, 2LL);
+}
+
+void TestImportSource::enumAutoValues() {
+    auto tree = importFromSource(QStringLiteral(
+        "enum Flags { A, B, C };"));
+    QCOMPARE(tree.nodes[0].enumMembers.size(), 3);
+    QCOMPARE(tree.nodes[0].enumMembers[0].second, 0LL);
+    QCOMPARE(tree.nodes[0].enumMembers[1].second, 1LL);
+    QCOMPARE(tree.nodes[0].enumMembers[2].second, 2LL);
+}
+
+void TestImportSource::enumHexValues() {
+    auto tree = importFromSource(QStringLiteral(
+        "enum { X = 0x10, Y = 0x20 };"));
+    // Anonymous enum has no name — parser skips it (unnamed enums are not added)
+    // Actually, let's use a named enum with hex values
+    tree = importFromSource(QStringLiteral(
+        "enum Hex { X = 0x10, Y = 0x20 };"));
+    QCOMPARE(tree.nodes[0].enumMembers.size(), 2);
+    QCOMPARE(tree.nodes[0].enumMembers[0].second, 0x10LL);
+    QCOMPARE(tree.nodes[0].enumMembers[1].second, 0x20LL);
+}
+
+void TestImportSource::enumInStruct() {
+    auto tree = importFromSource(QStringLiteral(
+        "enum PoolType { NonPaged = 0, Paged = 1 };\n"
+        "struct Foo {\n"
+        "    PoolType pool; //0x0\n"
+        "    uint32_t size; //0x4\n"
+        "};"));
+    // Should have 2 roots: PoolType enum + Foo struct
+    QCOMPARE(countRoots(tree), 2);
+
+    // Find Foo struct
+    int fooIdx = -1;
+    for (int i = 0; i < tree.nodes.size(); i++) {
+        if (tree.nodes[i].name == QStringLiteral("Foo")) { fooIdx = i; break; }
+    }
+    QVERIFY(fooIdx >= 0);
+    auto kids = childrenOf(tree, tree.nodes[fooIdx].id);
+    QCOMPARE(kids.size(), 2);
+    // First child should be UInt32 (enum mapped to int) with refId to PoolType
+    QCOMPARE(tree.nodes[kids[0]].kind, NodeKind::UInt32);
+    QCOMPARE(tree.nodes[kids[0]].name, QStringLiteral("pool"));
+    QVERIFY(tree.nodes[kids[0]].refId != 0); // linked to enum definition
+}
+
+void TestImportSource::enumClass() {
+    auto tree = importFromSource(QStringLiteral(
+        "enum class Scope : uint8_t { A = 1, B = 2 };"));
+    QCOMPARE(countRoots(tree), 1);
+    QCOMPARE(tree.nodes[0].classKeyword, QStringLiteral("enum"));
+    QCOMPARE(tree.nodes[0].structTypeName, QStringLiteral("Scope"));
+    QCOMPARE(tree.nodes[0].enumMembers.size(), 2);
+    QCOMPARE(tree.nodes[0].enumMembers[0].first, QStringLiteral("A"));
+    QCOMPARE(tree.nodes[0].enumMembers[0].second, 1LL);
 }
 
 QTEST_MAIN(TestImportSource)
