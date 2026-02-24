@@ -1,6 +1,9 @@
 <div align="center">
 
-# Reclass
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/RECLASS_LIGHTMODE.svg" height="170">
+  <img src="docs/RECLASS_DARKMODE.svg" alt="Reclass" height="170" />
+</picture>
 
 **A structured binary editor for reverse engineering — inspect raw bytes as typed structs, arrays, and pointers.<p>A complete overhaul of the popular "reclassing" tools**
 
@@ -35,6 +38,18 @@ Built with C++17, Qt 6, and QScintilla. The entire editor surface is rendered as
   - **Process plugin** — access memory of live processes on Windows and Linux
   - **WinDbg plugin** — access data sources live in WinDbg debugging sessions
   - **ReClass.NET compatibility layer** — load existing .NET and native ReClass.NET plugins
+
+---
+
+## Roadmap
+
+- [ ] Process memory section enumeration
+- [ ] Address parser auto-complete
+- [ ] Safe mode
+- [ ] File import for other Reclass instances
+- [ ] Expose UI functionality to plugins
+- [ ] iOS/macOS support
+- [ ] Display RTTI information
 
 ---
 
