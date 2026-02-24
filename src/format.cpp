@@ -1,5 +1,6 @@
 #include "core.h"
 #include "addressparser.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -70,6 +71,121 @@ static QString hexVal(uint64_t v) {
 
 static QString rawHex(uint64_t v, int digits) {
     return QString::number(v, 16).rightJustified(digits, '0');
+}
+
+template <typename T>
+static bool readPod(const Provider& prov, uint64_t addr, T* out) {
+    return prov.read(addr, out, sizeof(T));
+}
+
+static QString readAsciiZ(const Provider& prov, uint64_t addr, int maxLen = 256) {
+    QByteArray bytes;
+    bytes.reserve(maxLen);
+    for (int i = 0; i < maxLen; i++) {
+        char ch = '\0';
+        if (!prov.read(addr + (uint64_t)i, &ch, 1)) return {};
+        if (ch == '\0') break;
+        bytes.append(ch);
+    }
+    if (bytes.isEmpty()) return {};
+    return QString::fromLatin1(bytes);
+}
+
+static QString demangleMsvcTypeName(QString decorated) {
+    if (decorated.isEmpty()) return {};
+    QString body = decorated;
+
+    if (body.startsWith(QStringLiteral(".?AV")) || body.startsWith(QStringLiteral(".?AU")))
+        body = body.mid(4);
+    else if (body.startsWith(QStringLiteral(".?AW4")))
+        body = body.mid(5);
+    else
+        return decorated;
+
+    if (body.endsWith(QStringLiteral("@@")))
+        body.chop(2);
+
+    QStringList parts = body.split(QLatin1Char('@'), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) return decorated;
+
+    std::reverse(parts.begin(), parts.end());
+    return parts.join(QStringLiteral("::"));
+}
+
+struct MsvcRttiCol64 {
+    uint32_t signature;
+    uint32_t offset;
+    uint32_t cdOffset;
+    int32_t  pTypeDescriptor;
+    int32_t  pClassDescriptor;
+    int32_t  pSelf;
+};
+
+struct MsvcRttiCol32 {
+    uint32_t signature;
+    uint32_t offset;
+    uint32_t cdOffset;
+    uint32_t pTypeDescriptor;
+    uint32_t pClassDescriptor;
+};
+
+static QString tryMsvcRttiTypeName64(const Provider& prov, uint64_t objectAddr) {
+    uint64_t vftable = 0;
+    if (!readPod(prov, objectAddr, &vftable) || vftable < sizeof(uint64_t))
+        return {};
+
+    uint64_t colAddr = 0;
+    if (!readPod(prov, vftable - sizeof(uint64_t), &colAddr) || colAddr == 0)
+        return {};
+
+    MsvcRttiCol64 col{};
+    if (!readPod(prov, colAddr, &col)) return {};
+    if (col.signature != 1) return {};
+
+    int64_t imageBase = static_cast<int64_t>(colAddr) - static_cast<int64_t>(col.pSelf);
+    if (imageBase <= 0) return {};
+
+    int64_t typeDescAddr64 = imageBase + static_cast<int64_t>(col.pTypeDescriptor);
+    if (typeDescAddr64 <= 0) return {};
+    uint64_t typeDescAddr = static_cast<uint64_t>(typeDescAddr64);
+
+    QString rawName = readAsciiZ(prov, typeDescAddr + sizeof(uint64_t) * 2);
+    if (rawName.isEmpty()) return {};
+    return demangleMsvcTypeName(rawName);
+}
+
+static QString tryMsvcRttiTypeName32(const Provider& prov, uint64_t objectAddr) {
+    uint32_t vftable = 0;
+    if (!readPod(prov, objectAddr, &vftable) || vftable < sizeof(uint32_t))
+        return {};
+
+    uint32_t colAddr = 0;
+    if (!readPod(prov, static_cast<uint64_t>(vftable - sizeof(uint32_t)), &colAddr) || colAddr == 0)
+        return {};
+
+    MsvcRttiCol32 col{};
+    if (!readPod(prov, static_cast<uint64_t>(colAddr), &col)) return {};
+    if (col.signature != 0) return {};
+
+    uint64_t typeDescAddr = static_cast<uint64_t>(col.pTypeDescriptor);
+    if (typeDescAddr == 0) return {};
+
+    QString rawName = readAsciiZ(prov, typeDescAddr + sizeof(uint32_t) * 2);
+    if (rawName.isEmpty()) return {};
+    return demangleMsvcTypeName(rawName);
+}
+
+static QString pointerContextComment(const Provider& prov, uint64_t ptrValue, bool isPtr64) {
+    QStringList parts;
+    QString sym = prov.getSymbol(ptrValue);
+    if (!sym.isEmpty()) parts.append(sym);
+
+    QString rtti = isPtr64 ? tryMsvcRttiTypeName64(prov, ptrValue)
+                          : tryMsvcRttiTypeName32(prov, ptrValue);
+    if (!rtti.isEmpty()) parts.append(QStringLiteral("rtti:") + rtti);
+
+    if (parts.isEmpty()) return {};
+    return parts.join(QStringLiteral(" | "));
 }
 
 QString fmtInt8(int8_t v)     { return hexVal((uint8_t)v); }
@@ -262,8 +378,8 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         uint32_t val = prov.readU32(addr);
         if (!display) return rawHex(val, 8);
         QString s = fmtPointer32(val);
-        QString sym = prov.getSymbol((uint64_t)val);
-        if (!sym.isEmpty()) s += QStringLiteral("  // ") + sym;
+        QString ctx = pointerContextComment(prov, (uint64_t)val, false);
+        if (!ctx.isEmpty()) s += QStringLiteral("  // ") + ctx;
         return s;
     }
     case NodeKind::Pointer64: {
@@ -282,9 +398,9 @@ static QString readValueImpl(const Node& node, const Provider& prov,
                 QString derefVal = readValueImpl(tmp, prov, target, 0, mode);
                 if (display) {
                     QString arrow = QStringLiteral("-> ");
-                    QString sym = prov.getSymbol(val);
-                    if (!sym.isEmpty())
-                        return arrow + derefVal + QStringLiteral("  // ") + sym;
+                    QString ctx = pointerContextComment(prov, val, true);
+                    if (!ctx.isEmpty())
+                        return arrow + derefVal + QStringLiteral("  // ") + ctx;
                     return arrow + derefVal;
                 }
                 return derefVal;
@@ -294,8 +410,8 @@ static QString readValueImpl(const Node& node, const Provider& prov,
         }
         if (!display) return rawHex(val, 16);
         QString s = fmtPointer64(val);
-        QString sym = prov.getSymbol(val);
-        if (!sym.isEmpty()) s += QStringLiteral("  // ") + sym;
+        QString ctx = pointerContextComment(prov, val, true);
+        if (!ctx.isEmpty()) s += QStringLiteral("  // ") + ctx;
         return s;
     }
     case NodeKind::FuncPtr32: {

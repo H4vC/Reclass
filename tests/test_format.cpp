@@ -289,6 +289,47 @@ private slots:
         QVERIFY(s.contains("};"));
         QVERIFY(!s.contains("sizeof"));  // No sizeof comment
     }
+    void testReadValuePointer64_surfacesMsvcRtti() {
+        QByteArray data(0x300, '\0');
+
+        auto writeU32 = [&](int at, uint32_t v) {
+            memcpy(data.data() + at, &v, sizeof(v));
+        };
+        auto writeU64 = [&](int at, uint64_t v) {
+            memcpy(data.data() + at, &v, sizeof(v));
+        };
+
+        // Pointer field at 0x00 points to an object at 0x20.
+        writeU64(0x00, 0x20);
+
+        // Object starts with vfptr pointing to vftable at 0x100.
+        writeU64(0x20, 0x100);
+        // MSVC vftable[-1] points to CompleteObjectLocator at 0x140.
+        writeU64(0xF8, 0x140);
+
+        // COL (x64, signature=1) with image-relative TypeDescriptor and self RVA.
+        writeU32(0x140, 1);          // signature
+        writeU32(0x144, 0);          // offset
+        writeU32(0x148, 0);          // cdOffset
+        writeU32(0x14C, 0x80);       // pTypeDescriptor (0x180 - imageBase 0x100)
+        writeU32(0x150, 0);          // pClassDescriptor (unused by this path)
+        writeU32(0x154, 0x40);       // pSelf (0x140 - imageBase 0x100)
+
+        // TypeDescriptor at 0x180: [vfptr][spare][name...].
+        const QByteArray rawName = QByteArrayLiteral(".?AVWidget@Engine@@");
+        memcpy(data.data() + 0x190, rawName.constData(), rawName.size());
+        data[0x190 + rawName.size()] = '\0';
+
+        BufferProvider prov(data);
+        Node n;
+        n.kind = NodeKind::Pointer64;
+        n.name = "obj";
+
+        QString rendered = fmt::readValue(n, prov, 0x00, 0);
+        QVERIFY(rendered.startsWith(QStringLiteral("-> 0x20")));
+        QVERIFY(rendered.contains(QStringLiteral("rtti:Engine::Widget")));
+    }
+
 };
 
 QTEST_MAIN(TestFormat)
